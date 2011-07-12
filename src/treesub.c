@@ -776,7 +776,7 @@ void AllPatterns (FILE* fout)
    You then replace those 1'with the calculated pattern probabilities for further 
    analysis.
 */
-   int i,j,h, it, ic;
+   int j, h, it, ic;
    char codon[4]="   ", b[3];
    int n31=(com.seqtype==CODONseq||com.seqtype==CODON2AAseq?3:1);
    int gap=(n31==3?3:10);
@@ -803,7 +803,7 @@ void AllPatterns (FILE* fout)
 
    fprintf(fout, " %6d %6d  P\n", com.ns, com.ls*n31);
    if(com.seqtype==1) {
-  #if(defined CODEML || defined YN00)
+#if(defined CODEML || defined YN00)
       printsmaCodon (fout, com.z, com.ns, com.ls, com.ls, 0);
 #endif
    }
@@ -3882,7 +3882,8 @@ int StarDecomposition (FILE *fout, double space[])
    FILE *ftree, *fsum=frst;
 
    if (com.runmode==1) {   /* read the star-like tree from tree file */
-      if ((ftree=fopen (com.treef,"r"))==NULL) error2("no treefile");
+      if ((ftree=fopen (com.treef,"r"))==NULL)
+         error2("no treefile");
       fscanf (ftree, "%d%d", &i, &ntree);
       if (ReadTreeN(ftree, &i, &j, 0, 1)) error2("err tree file");
       fclose (ftree);
@@ -6708,11 +6709,10 @@ int minB (FILE*fout, double *lnL,double x[],double xb[][2],double e0, double spa
          if(noisy>2) printf("\n\nRound %da: Paras (%d) (e=%.6g)",ir+1,npcom,e);
          ming2(NULL,lnL,com.plfun,NULL,xcom, xbcom, com.space,e,npcom);
          if(noisy>2) {
-            FPN(F0); FOR(i,npcom) printf("%12.6f",xcom[i]);
+            FPN(F0); FOR(i,npcom) printf(" %11.6f", xcom[i]);
             printf("%8s%s\n", "", printtime(timestr));
          }
       }
-
       noisy_minbranches = noisy;
       if(noisy>2)
          printf("\nRound %db: Blengths (%d, e=%.6g)\n",ir+1,tree.nbranch,e_minbranches);
@@ -6743,7 +6743,8 @@ int minB (FILE*fout, double *lnL,double x[],double xb[][2],double e0, double spa
       lnL0= *lnL;
       if(fout) {
          fprintf(fout,"%4d %12.5f x ", ir+1,*lnL);
-         for(i=0;i<com.np;i++) fprintf(fout,"%9.5f",x[i]);
+         for(i=0; i<com.np; i++)
+            fprintf(fout, " %8.5f", x[i]);
          FPN(fout);  fflush(fout);
       }
    }
@@ -6811,6 +6812,8 @@ int minB2 (FILE*fout, double *lnL,double x[],double xb[][2],double e0, double sp
 /*********************  END: Testing iteration algorithm ******************/
 
 
+static int times=0;
+
 
 int updateconP (double x[], int inode)
 {
@@ -6835,7 +6838,9 @@ int updateconP (double x[], int inode)
          if(com.Mgene>1 || com.nalpha>1)
             SetPGene(ig,com.Mgene>1,com.Mgene>1,com.nalpha>1,x);
          /* x[] needed by local clock models and if(com.aaDist==AAClasses).
-            This is called from PostProbNode  */
+            This is called from PostProbNode
+         */
+         
          ConditionalPNode(inode, ig, x);
       }
    else {  /* site-class models */
@@ -6852,14 +6857,14 @@ int updateconP (double x[], int inode)
          SetPSiteClass(ir, x);
          for(ig=0; ig<com.ngene; ig++) {
             if(com.Mgene>1 || com.nalpha>1)
-               SetPGene(ig,com.Mgene>1,com.Mgene>1,com.nalpha>1,x);
+               SetPGene(ig, com.Mgene>1, com.Mgene>1, com.nalpha>1, x);
             if(com.nalpha>1) SetPSiteClass(ir, x);
             ConditionalPNode(inode,ig, x);
          }
       }
 
       /* shift positions */
-      com.nodeScaleF-=(com.ncatG-1)*com.NnodeScale*com.npatt;
+      com.nodeScaleF -= (com.ncatG-1)*com.NnodeScale*com.npatt;
       for(i=com.ns; i<tree.nnode; i++)
          nodes[i].conP -= (com.ncatG-1)*(tree.nnode-com.ns)*com.ncode*(size_t)com.npatt;
    }
@@ -6869,7 +6874,7 @@ int updateconP (double x[], int inode)
 
 double minbranches (double x[], int np)
 {
-/* Z. Yang, November 1999.
+/* Ziheng, November 1999.
    optimizing one branch at a time
    
    for each branch a..b, reroot the tree at b, and 
@@ -6907,6 +6912,8 @@ double minbranches (double x[], int np)
          l0 = l;
          a = tree.branches[ib][0];
          b = tree.branches[ib][1];
+         /* if a is the root, why do we want to reroot the tree at b?  Just switch a with b? */
+
          for(i=0; i<tree.nnode; i++)
             com.oldconP[i]=1;
          ReRootTree(b);
@@ -6918,15 +6925,14 @@ double minbranches (double x[], int np)
             else
                lfuntdd_SiteClass(t, a, b, xcom, &y, &dl, &ddl, space);
 
-            if(fabs(y-l)>1e-3 && noisy_minbranches>2)
-               printf("\nWarning rounding error? b=%d cycle=%d lnL=%12.7f != %12.7f\n",ib,icycleb,l,y);
             p = -dl/fabs(ddl);
             /* p = -dl/ddl; newton direction */
             if (fabs(p)<small) step = 0;
-            else if(p<0)       step = min2(1,(tb[0]-t0)/p);
-            else               step = min2(1,(tb[1]-t0)/p);
+            else if(p<0)       step = min2(1, (tb[0]-t0)/p);
+            else               step = min2(1, (tb[1]-t0)/p);
 
-            if(icycle==0 && step!=1 && step!=0) step *= 0.99; /* avoid border */
+            if(icycle==0 && step!=1 && step!=0)
+               step *= 0.99; /* avoid border */
             for (i=0; step>small; i++,step/=4) {
                t = t0 + step*p;
                if(!com.conPSiteClass) lfunt(t, a, b, xcom, &l, space);
@@ -6959,15 +6965,16 @@ int lfunt(double t, int a, int b, double xcom[], double *l, double space[])
 /* See notes for lfunt_dd and minbranches
 */
    int i,j,k, h,ig, n=com.ncode, nroot=n;
-   int n1 = (com.cleandata&&b<com.ns ? 1 : n), xb;
+   int n1 = (com.cleandata&&b<com.ns ? 1 : n), xb, nUVR;
    double expt,uexpt=0,multiply;
    double *P=space, piqi,pqj, fh, mr=0;
    double *pkappa;
 
 #if (CODEML)
+   nUVR = NBTYPE+2;
    pkappa=(com.hkyREV||com.codonf==FMutSel ? xcom+com.nrgene : &com.kappa);
    if (com.seqtype==CODONseq && com.model) {
-      if(com.model==2 && com.nOmega<=5) {
+      if((com.model==NSbranchB || com.model==NSbranch2) && com.NSsites==0 && com.nbtype<=nUVR) {
          U = _UU[(int)nodes[a].label]; 
          V = _VV[(int)nodes[a].label]; 
          Root = _Root[(int)nodes[a].label]; 
@@ -7037,21 +7044,22 @@ int lfuntdd(double t, int a, int b, double xcom[], double *l, double*dl, double*
    i for b, j for a?
 */
    int i,j,k, h,ig,n=com.ncode, nroot=n;
-   int n1 = (com.cleandata&&b<com.ns ? 1 : n), xb;
+   int n1 = (com.cleandata&&b<com.ns ? 1 : n), xb, nUVR;
    double expt, uexpt = 0, multiply;
    double *P=space, *dP=P+n*n,*ddP=dP+n*n, piqi,pqj,dpqj,ddpqj, fh, dfh, ddfh;
    double *pkappa, mr=0;
 
 #if(CODEML)
+   nUVR = NBTYPE+2;
    pkappa=(com.hkyREV||com.codonf==FMutSel ? xcom+com.nrgene : &com.kappa);
    if (com.seqtype==CODONseq && com.model) {
-      if(com.model==2 && com.nOmega<=5) {
+      if((com.model==NSbranchB || com.model==NSbranch2) && com.NSsites==0 && com.nbtype<=nUVR) {
          U = _UU[(int)nodes[a].label]; 
          V = _VV[(int)nodes[a].label]; 
          Root = _Root[(int)nodes[a].label]; 
       }
       else {
-         EigenQcodon(0,-1,NULL,NULL,NULL,Root,U,V, &mr, pkappa, nodes[a].omega,PMat);
+         EigenQcodon(0,-1,NULL,NULL,NULL,Root,U,V, &mr, pkappa, nodes[a].omega, PMat);
       }
    }
 #endif
@@ -7089,6 +7097,7 @@ int lfuntdd(double t, int a, int b, double xcom[], double *l, double*dl, double*
          }
 #endif
       }
+
       for (h=com.posG[ig]; h<com.posG[ig+1]; h++) {
          n1 = (b<com.ns ? nChara[com.z[b][h]] : n);
          for(i=0,fh=dfh=ddfh=0; i<n1; i++) {
@@ -7844,14 +7853,14 @@ int ResetFinetuneSteps(FILE *fout, double Pjump[], double finetune[], int nsteps
 {
    int j, verybadstep=0;
    double PjumpOpt = 0.30; /* this is the optimum for the 2NormalSym move. */
-   double P0Change[2]={0.2, 0.5}; /* no change if in interval. */
+   double P0Change[2]={0.2, 0.5}; /* no change if in interval? */
 
    printf("\n\nCurrent Pjump:    ");
    for(j=0; j<nsteps; j++)
       printf(" %8.5f", Pjump[j]);
    printf("\nCurrent finetune: ");
    for(j=0; j<nsteps; j++)
-      printf(" %8.5f", mcmc.finetune[j]);
+      printf(" %8.5f", finetune[j]);
 
    if(fout) {
       fprintf(fout, "\nCurrent Pjump:    ");
@@ -7859,31 +7868,35 @@ int ResetFinetuneSteps(FILE *fout, double Pjump[], double finetune[], int nsteps
          fprintf(fout, " %8.5f", Pjump[j]);
       fprintf(fout, "\nCurrent finetune: ");
       for(j=0; j<nsteps; j++)
-         fprintf(fout, " %8.5f", mcmc.finetune[j]);
+         fprintf(fout, " %8.5f", finetune[j]);
    }
 
    for(j=0; j<nsteps; j++) {
-      if(Pjump[j] < 0.0001) {
-         mcmc.finetune[j] /= 100;
+      if(Pjump[j] < 0.001) {
+         finetune[j] /= 100;
          verybadstep = 1;
       }
-      else if(Pjump[j] > 0.9999) {
-         mcmc.finetune[j] *= 100;
+      else if(Pjump[j] > 0.999) {
+         finetune[j] *= 100;
          verybadstep = 1;
       }
+      else
+         finetune[j] *= tan(Pi/2*Pjump[j])/tan(Pi/2*PjumpOpt);
+      /*
       else if(Pjump[j] < P0Change[0] || Pjump[j] > P0Change[1])
-         mcmc.finetune[j] *= tan(Pi/2*Pjump[j])/tan(Pi/2*PjumpOpt);
+         finetune[j] *= tan(Pi/2*Pjump[j])/tan(Pi/2*PjumpOpt);
+      */
    }
 
    printf("\nNew     finetune: ");
    for(j=0; j<nsteps; j++)
-      printf(" %8.5f", mcmc.finetune[j]);
+      printf(" %8.5f", finetune[j]);
    printf("\n\n");
 
    if(fout) {
       fprintf(fout, "\nNew     finetune: ");
       for(j=0; j<nsteps; j++)
-         fprintf(fout, " %8.5f", mcmc.finetune[j]);
+         fprintf(fout, " %8.5f", finetune[j]);
       fprintf(fout, "\n");
    }
 

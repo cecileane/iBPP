@@ -25,7 +25,7 @@
 */
 
 
-#define NSPECIES      15        /* max # of species */
+#define NSPECIES      20        /* max # of species */
 #define NS            500       /* max # of sequences */
 #define NBRANCH       NS*2-2
 #define MAXNSONS      2
@@ -174,7 +174,7 @@ int main (int argc, char*argv[])
 #else
    char ctlf[128]="MCcoal.ctl";
 #endif
-   char VStr[32]="Version 2.0a, November 2010";
+   char VStr[32]="Version 2.1, May 2011";
    FILE *fout;
    int i;
 
@@ -247,7 +247,7 @@ int GetOptionsSimulation (char *ctlf)
                   case ( 2): sscanf(pline+1, "%s", com.outf);    break;
                   case ( 3): sscanf(pline+1, "%s", com.Imapf); break;
                   case ( 4): 
-                     if((sptree.nspecies=com.ns=(int)t)>NSPECIES) error2("raise NSPECIES");
+                     if((sptree.nspecies=com.ns=(int)t)>NSPECIES) error2("raise NSPECIES?");
                      if(sptree.nspecies>8*sizeof(int)) error2("NSPECIES larger than size of int.");
                      ReadSpeciesTree(fctl, pline+1);
                      break;
@@ -351,7 +351,8 @@ int GetOptions (char *ctlf)
                   case ( 6): sscanf(pline+1, "%d", &sptree.nLHistories);   break;
                      break;
                   case ( 7): 
-                     if((sptree.nspecies=com.ns=(int)t)>NSPECIES) error2("raise NSPECIES");
+                     if((sptree.nspecies=com.ns=(int)t)>NSPECIES)
+                        error2("raise NSPECIES");
                      if(sptree.nspecies>8*sizeof(int)) error2("NSPECIES larger than size of int.");
                      ReadSpeciesTree(fctl, pline+1);
                      break;
@@ -1425,7 +1426,7 @@ int ReadSeqData(char *seqfile, char *locusratef, char *heredityf, FILE*fout, cha
 
       printf("%5d patterns, %s\r", com.npatt,(com.cleandata?"clean":"messy"));
       if(data.est_heredity==2) 
-         printf(" (heredity scalar = %.2f)", data.heredity[locus]);
+         printf(" (heredity scalar = %4.2f ", data.heredity[locus]);
       printf((data.ngene>500 ? "\r" : "\n"));
    }
 
@@ -3400,14 +3401,18 @@ int MCMC (FILE* fout)
    char BtreeStr[NSPECIES], line[16000], *mcmctmp="mcmc.tmp";
    int locus, j,k, ir, Btree=0, bit, lline=16000;
    double pBtree=0;
-   double *x, *mx, lnL, freqtree[16000]={0}, PrSplit=0.5, postnodes[NSPECIES-1]={0};
+   double *x, *mx, *freqtree, lnL, PrSplit=0.5, postnodes[NSPECIES-1]={0};
    double Pmodel=0, Pjump[7]={0}, nround=0;
    double PtauThreshold[NSPECIES][2]={{0}}, tauThreshold[2]={2E-5, 2E-4};
 
    noisy=3;
 
-   if((1<<(sptree.nspecies-1)) > 16000)
-      error2("too many species for this kind of species tree representation");
+   if(sptree.speciesdelimitation) {
+      k = (1<<(sptree.nspecies-1));
+      if((freqtree=(double*)malloc(k*sizeof(double))) == NULL)
+         error2("oom for freqtree");
+      memset(freqtree, 0, k*sizeof(double));
+   }
    mcmc.moveinnode = 1;     /* moves internal nodes in the gene tree as well */
    mcmc.saveconP = 1;
    if(!mcmc.usedata) mcmc.saveconP = 0;
@@ -3591,6 +3596,8 @@ int MCMC (FILE* fout)
                if(j & (1 << k)) postnodes[sptree.nspecies-1-1-k] += freqtree[j]/nround;
          }
       }
+      free(freqtree);
+
       copySptree();
       for(k=0; k<sptree.nspecies*2-1; k++)
          nodes[k].label = (k<sptree.nspecies ? 0 : postnodes[k-sptree.nspecies]);

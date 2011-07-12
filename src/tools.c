@@ -1803,6 +1803,77 @@ double PDFSkewN (double x, double loc, double scale, double shape)
 }
 
 
+int StirlingS2(int n, int k)
+{
+/* Stirling number of the second type, calculated using the recursion (loop)
+   S(n, k) = S(n - 1, k - 1) + k*S(n - 1, k).
+   This works for small numbers of n<=15.
+*/
+   int S[16]={0}, i, j;
+
+   if((n==0 && k==0) || k==1 || k==n)
+      return 1;
+   if(k==0 || k>n)
+      return 0;
+   if(k==2)
+      return (int) ldexp(1,n-1) - 1;
+   if(k==n-1)
+      return n*(n-1)/2;
+   if(n>15)
+      error2("n>15 too large in StirlingS2()");
+
+   S[1] = S[2] = 1;  /* start with n = 2 */
+   for(i=3; i<=n; i++) {
+      for(j=min2(k,i); j>=2; j--)
+         S[j] = S[j-1] + j*S[j];
+   }
+   return S[k];
+}
+
+double lnStirlingS2(int n, int k)
+{
+/* This calculates the logarithm of the Stirling number of the second type.
+   Temme NM. 1993. Asymptotic estimates of Stirling numbers. Stud Appl Math 89:233-243.
+*/
+   int i;
+   double lnS=0, t0, x0, x, A, nk, y;
+
+   if(k>n) error2("k<n in lnStirlingS2");
+
+   if(n==0 && k==0)
+      return 0;
+   if(k==0)
+      return -1e300;
+   if(k==1 || k==n) 
+      return (0);
+   if(k==2)
+      return (n<50 ? log(ldexp(1,n-1) - 1) : (n-1)*0.693147);
+   if(k==n-1)
+      return log(n*(n-1)/2.0);
+   if(n<8)
+      return log((double)StirlingS2(n, k));
+   
+   nk = (double)n/k;
+   for(i=0,x0=x=1; i<10000; i++) {
+      x = (x0 + nk - nk*exp(-x0))/2;
+      if(fabs(x-x0)/(1+x) < 1e-10) break;
+      x0 = x;
+   }
+   t0 = n/(double)k - 1;
+   if(x<100)
+      A = -n * log(x) + k*log(exp(x) - 1);
+   else 
+      A = -n * log(x) + k*x;
+
+   A += -k*t0 + (n-k)*log(t0);
+   lnS = A + (n-k)*log((double)k) + 0.5*log(t0/((1 + t0)*(x - t0)));
+   lnS += log(Binomial(n, k, &y));
+   lnS += y;
+
+   return(lnS);
+}
+
+
 double LnGamma (double x)
 {
 /* returns ln(gamma(x)) for x>0, accurate to 10 decimal places.
@@ -4186,8 +4257,9 @@ int matby (double a[], double b[], double c[], int n, int m, int k)
 {
    int i,j,i1;
    double t;
-   FOR (i,n)  FOR(j,k) {
-      for (i1=0,t=0; i1<m; i1++) t+=a[i*m+i1]*b[i1*k+j];
+   for(i=0; i<n; i++)
+      for(j=0; j<k; j++) {
+         for (i1=0,t=0; i1<m; i1++) t += a[i*m+i1]*b[i1*k+j];
       c[i*k+j] = t;
    }
    return (0);
@@ -4264,31 +4336,31 @@ int matinv (double x[], int n, int m, double space[])
          exit(-1);
       }
       if (irow[i] != i) {
-         FOR (j,m) {
+         for(j=0; j<m; j++) {
             t = x[i*m+j];
             x[i*m+j] = x[irow[i]*m+j];
             x[irow[i]*m+j] = t;
          }
       }
       t = 1./x[i*m+i];
-      FOR (j,n) {
+      for(j=0; j<n; j++) {
          if (j == i) continue;
          t1 = t*x[j*m+i];
          FOR(k,m)  x[j*m+k] -= t1*x[i*m+k];
          x[j*m+i] = -t1;
       }
-      FOR(j,m)   x[i*m+j] *= t;
+      for(j=0; j<m; j++)   x[i*m+j] *= t;
       x[i*m+i] = t;
    }                            /* for(i) */
    for (i=n-1; i>=0; i--) {
       if (irow[i] == i) continue;
-      FOR(j,n)  {
+      for(j=0; j<n; j++)  {
          t = x[j*m+i];
          x[j*m+i] = x[j*m + irow[i]];
          x[j*m + irow[i]] = t;
       }
    }
-   space[0]=det;
+   space[0] = det;
    return(0);
 }
 
@@ -4304,6 +4376,7 @@ int matexp (double Q[], double t, int n, int TimeSquare, double space[])
 
       P(t) = (I + Qt/m + (Qt/m)^2/2)^m, with m = 2^TimeSquare.
 
+   See equation (2.22) and the discussion below in Yang (2006).
    T[it=0] is the current matrix, and T[it=1] is the squared result matrix,
    used to avoid copying matrices.
    Use an even TimeSquare to avoid one round of matrix copying.
@@ -4312,12 +4385,16 @@ int matexp (double Q[], double t, int n, int TimeSquare, double space[])
    double *T[2];
 
    if(TimeSquare<2 || TimeSquare>31) error2("TimeSquare not good");
-   T[0]=Q; T[1]=space;
-   for(i=0; i<n*n; i++)  T[0][i] = ldexp( Q[i]*t, -TimeSquare );
+   T[0] = Q;
+   T[1] = space;
+   for(i=0; i<n*n; i++)
+      T[0][i] = ldexp( Q[i]*t, -TimeSquare );
 
    matby (T[0], T[0], T[1], n, n, n);
-   for(i=0; i<n*n; i++)  T[0][i] += T[1][i]/2;
-   for(i=0; i<n; i++)  T[0][i*n+i] ++;
+   for(i=0; i<n*n; i++)
+      T[0][i] += T[1][i]/2;
+   for(i=0; i<n; i++)
+      T[0][i*n+i] ++;
 
    for(i=0,it=0; i<TimeSquare; i++) {
       it = !it;
@@ -4327,7 +4404,6 @@ int matexp (double Q[], double t, int n, int TimeSquare, double space[])
       for(i=0;i<n*n;i++) Q[i]=T[1][i];
    return(0);
 }
-
 
 
 void HouseholderRealSym(double a[], int n, double d[], double e[]);
