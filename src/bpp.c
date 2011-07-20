@@ -3,6 +3,7 @@
    phylogeographic data.
    
    Copyright by Ziheng Yang, since July 2002
+   Modified by Cecile Ane, July 2011, to also use quantitative trait data
 
    UNIX gcc/icc:
    cc -o bpp -m64 -march=opteron -mtune=opteron -ansi -O3 -funroll-loops -fomit-frame-pointer -finline-functions bpp.c tools.c -lm
@@ -26,18 +27,19 @@
 
 
 #define NSPECIES      20        /* max # of species */
-#define NS            500       /* max # of sequences */
+#define NS            500       /* max # of sequences and of individuals for trait data*/
 #define NBRANCH       NS*2-2
 #define MAXNSONS      2
 /* #define NGENE         213000   */  /* max # of loci */
 #define NGENE         100000     /* max # of loci */
+#define NTRAIT          1000     /* max # of traits */
 #define LSPNAME       30         /* # characters in sequence names */
 
 #include "paml.h"
 
 struct CommonInfo {
    char *z[2*NS-1], *spname[NS];
-   char seqf[96], Imapf[96],outf[96], mcmcf[96], locusratef[96], heredityf[96];
+   char seqf[96], Imapf[96],outf[96], mcmcf[96], locusratef[96], heredityf[96],traitf[96];
    char cleandata, oldconP[NS*2-1];
    int ns, ls, lgene[1], model, clock, simulation;
    int seqtype, ngene, *pose, npatt, np, readpattern;
@@ -45,14 +47,17 @@ struct CommonInfo {
    double alpha, pi[4], piG[1][4], *rates, rgene[1];
    double *conP;  /* not used */
    int curconP;
-   size_t sconP;
+   size_t sconP;        /* size (# bytes) for conditional probabilities */
    double *conPin[2], *fpatt, space[1000000];
    double a_locusrate;  /* a_locusrate is duplicated in com for simulation & in data. */
 }  com;
 struct TREEB {
    int  nbranch, nnode, root, branches[NBRANCH][2];
    double lnL;
-}  tree;
+}  tree; /* branch lengths and log likelihood of a particular gene tree */
+/* Used by the simulation program to get a random gene tree in 'tree' and 'nodes' (below).
+   used by the inference program to generate the starting gene tree with coalescent times.
+*/
 struct TREEN {
    int father, nson, sons[2], ibranch, ipop;  /* ibranch not used? */
    double branch, age, *conP, label;          /* age is uptodate but not branch */
@@ -78,7 +83,7 @@ struct SPECIESTREE {
    int nbranch, nnode, root, nspecies, nseqsp[NSPECIES]; 
    int npop, pops[NSPECIES*2-1], pop_pop_table[NSPECIES*2-1][NSPECIES*2-1], Itree;
    int speciesdelimitation;
-   int nLHistories;  /* =0 for uniform LHs; =1 for uniform trees */
+   int nLHistories;  /* =0 for uniform Labelled Histories; =1 for uniform trees */
    int migration;
    double M[NSPECIES*2-1][NSPECIES*2-1];
    struct TREESPN {
@@ -99,16 +104,37 @@ struct DATA {
 #else
 
 struct DATA { /* locus-specific data and gene tree information, used in lnpGB */
-   int maxns, ngene, lgene[NGENE];
+   int maxns, ngene, lgene[NGENE]; // data.maxns is the max # sequences determined by the control file.
    int ns[NGENE], nseqsp[NGENE][NSPECIES], ls[NGENE], npatt[NGENE];
    int root[NGENE+1], conP_offset[NGENE];
    char *z[NGENE][NS], cleandata[NGENE], *Imap, *Inames[NS];
+   /* Imap[i] = j if the ith individual listed in the Imap file belongs to species j.
+      Inames[i] = name of the ith individual listed in the Imap file.
+   */
    double *fpatt[NGENE], *lnpGBi, *lnpDi, *locusrate, *heredity;
    double theta_prior[2], tau_prior[3];
    double a_locusrate, a_heredity, b_heredity;
    double a_seqerr[NSPECIES][4*4], e_seqerr[NSPECIES][4*4];
    int est_locusrate, est_heredity, nseqerr, iseqerr[NSPECIES];
 }  data;
+
+struct TRAITDATA { /* trait data */
+  int ntrait;                // number of trait variables
+  int nind;                  // # of individuals for which trait data is available
+  char *traitName[NTRAIT];   // names of the trait variables
+  int indSpeciesMap[NS];     /* index of the species that individual i belongs to
+			        The ith individual listed in the trait file is not 
+			        required to be the same as the ith individual listed
+			        in the Imap or sequence file. */
+  char cleantrait[NTRAIT];   /* 1 if trait has no missing entries */
+  char ismissing[NTRAIT][NS];/* 1 if entry missing for trait i and individual j */
+  int ni[NTRAIT];            // # of individuals with no missing data for trait i
+  double y[NTRAIT][NS];/* trait data, supposed to be continuous at this point
+			   first read from file than standardized */
+  double ybar[NTRAIT]; /* strait (non-phylogenetic) mean taken over populations,
+			   not over individuals. Used to standardize each trait */
+  double scale[NTRAIT];/* strait SD from ybar. Used to standardize each trait */
+}  traitdata;
 
 struct MCMCPARAMETERS {
    int resetFinetune, burnin, nsample, sampfreq, usedata, saveconP;
@@ -131,6 +157,9 @@ int ResetSpeciesGeneTree(int locus);
 int Coalescence1Pop(int ispecies);
 int CoalescentMigration(void);
 int ReadSeqData(char *seqfile, char *locusratef, char *heredityf, FILE*fout, char cleandata, char ipop[]);
+int ReadTraitData(char *traitfile, FILE*fout);
+int StandardizeTraitData(FILE*fout);
+void printTraitData(FILE *fileout);
 double lnpGB_ThetaTau(int locus);
 double lnpData(double lnpDi[]);
 double lnpD_locus(int locus);
@@ -174,7 +203,7 @@ int main (int argc, char*argv[])
 #else
    char ctlf[128]="MCcoal.ctl";
 #endif
-   char VStr[32]="Version 2.1, May 2011";
+   char VStr[64]="Version 2.1, May 2011, with trait modification, July 2011\n";
    FILE *fout;
    int i;
 
@@ -194,12 +223,14 @@ int main (int argc, char*argv[])
    com.simulation=0;
    com.ngene = -1;  /* not used */
    data.ngene = 1;
-   GetOptions(ctlf);
+   GetOptions(ctlf); 
    fout = gfopen(com.outf,"w");
    fprintf(fout, "bp&p (%s) %s\n", VerStr, com.seqf);
    /* The size of ipop[] is total#sequences*sizeof(char) */
    ReadSeqData(com.seqf, com.locusratef, com.heredityf, fout, com.cleandata, (char*)com.space);
-   SetMapAmbiguity();
+   SetMapAmbiguity(); // the map from the ambiguity characters to resolved characters
+   ReadTraitData(com.traitf, fout);
+   StandardizeTraitData(fout);
    GetMem((char*)com.space);
    MCMC(fout);
    FreeMem();
@@ -297,12 +328,13 @@ int GetOptionsSimulation (char *ctlf)
 
 int GetOptions (char *ctlf)
 {
-   int nopt=21, lline=4096, locfields[1000], iopt, i, is, ierror;
+   int nopt=24, lline=4096, locfields[1000], iopt, i, is, ierror;
    char line[4096],*pline, opt[32], *comment="*#", *seqerrstr="0EF";
    char *optstr[] = {"seed", "seqfile", "Imapfile", "outfile", "mcmcfile", "speciesdelimitation", 
                      "uniformrootedtrees", "species&tree", "usedata", "nloci", "cleandata", 
                      "thetaprior", "tauprior", "heredity", "locusrate", "sequenceerror", 
-                     "finetune", "print", "burnin", "sampfreq", "nsample"};
+                     "finetune", "print", "burnin", "sampfreq", "nsample",
+		     "traitfile", "ntraits","nindT"};
    char name[LSPNAME];
    double t=1, *eps=mcmc.finetune;
    FILE  *fctl=gfopen (ctlf, "r");
@@ -311,18 +343,20 @@ int GetOptions (char *ctlf)
    for(is=0; is<NSPECIES; is++) 
       for(i=0; i<16; i++) 
          data.a_seqerr[is][i] = data.e_seqerr[is][i] = 0;
+   traitdata.nind = 0;      /* initializing trait data */
+   traitdata.ntrait = 0;
 
    if (fctl) {
       if (noisy) printf ("\nReading options from %s..\n", ctlf);
       for (;;) {
          if(fgets(line, lline, fctl) == NULL) 
             break;
-         if(line[0]=='/' && line[1]=='/') 
+         if(line[0]=='/' && line[1]=='/') // the "//" stops the reading of the file.
             break;
          for (i=0,t=0,pline=line; i<lline&&line[i]; i++)
             if (isalnum(line[i]))  { t=1; break; }
             else if (strchr(comment,line[i])) break;
-         if (t==0) continue;
+         if (t==0) continue;              // lines starting with a comment symbol are ignored
          sscanf (line, "%s%*s%lf", opt, &t);
          if ((pline=strstr(line, "="))==NULL) error2 ("option file.\nExpecting '=' ");
 
@@ -411,6 +445,9 @@ int GetOptions (char *ctlf)
                   case (18): mcmc.burnin=(int)t;    break;
                   case (19): mcmc.sampfreq=(int)t;  break;
                   case (20): mcmc.nsample=(int)t;   break;
+                  case (21): sscanf(pline+1, "%s", com.traitf);   break;
+                  case (22): traitdata.ntrait=(int)t; break;
+                  case (23): traitdata.nind=(int)t; break;
                }
                break;
             }
@@ -457,6 +494,8 @@ int ReadSpeciesTree (FILE* fctl, char *currline)
    }
    if(maxns>NS) error2("raise NS in source file");
    if(maxns<2) error2("<2 seqs?  Too simple to do anything about.");
+   if(traitdata.nind == 0) // it means the control file did not provide a value for this
+     traitdata.nind = maxns;// so using the genetic data to fill this in.
    printf("%d species: ", sptree.nspecies);
    for(i=0; i<sptree.nspecies; i++) 
       printf(" %s (%d)",com.spname[i], sptree.nseqsp[i]);
@@ -480,7 +519,7 @@ int ReadSpeciesTree (FILE* fctl, char *currline)
    else {
       ReadTreeN (fctl, &i, &j, 0, 1);
       OutTreeN(F0,1,com.simulation);
-      FPN(F0);
+      FPN(F0); // defined in paml.h: File Put Newline to F0=stdout
 
       /* copy into sptree */
       sptree.nnode = tree.nnode; 
@@ -1275,8 +1314,6 @@ void EvolveJC (int inode)
 
 #else
 
-
-
 int ReadSeqData(char *seqfile, char *locusratef, char *heredityf, FILE*fout, char cleandata, char ipop[])
 {
 /* Read sequences at each locus. This sets data.nseqsp[ig].  The ipop info for 
@@ -1296,6 +1333,11 @@ int ReadSeqData(char *seqfile, char *locusratef, char *heredityf, FILE*fout, cha
    data.Imap = (char*)malloc(maxind*(1+lname)*sizeof(char));
    if(data.Imap == NULL) error2("oom Imap");
    memset(data.Imap, 0, maxind);
+   /* initialized to Imap[i] = 0 for the first i's.
+      The first maxind bytes of the memory block are used for the actual 
+      mapping individual i -> species index.
+      The next maxind*lname bytes of the memory block are used for the individual 
+      names read from the file, which data.Inames[i] are going to point to. */ 
 
    if(sptree.nspecies>1) {
       fImap = gfopen(com.Imapf, "r");
@@ -1373,7 +1415,7 @@ int ReadSeqData(char *seqfile, char *locusratef, char *heredityf, FILE*fout, cha
    for(locus=0,maxns=0; locus<data.ngene; ipop+=data.ns[locus++]) {
       fprintf(fout, "\n\n*** Locus %d ***\n", locus+1);
       com.cleandata = clean0;
-      ReadSeq(fout, fseq, clean0);
+      ReadSeq(fout, fseq, clean0); // this function updates com.ns to # of sequences read
       data.cleandata[locus] = com.cleandata;
       if(com.ns<=1) error2("one seq not useful in sequence file");
       if(data.nseqerr==0) PatternWeightJC69like (fout);
@@ -1381,7 +1423,7 @@ int ReadSeqData(char *seqfile, char *locusratef, char *heredityf, FILE*fout, cha
          printf("\n%d seqs at locus %d.  More than allowed by the control file.", com.ns, locus+1);
          exit(-1);
       }
-      maxns = max2(maxns,com.ns);
+      maxns = max2(maxns,com.ns);  // maxns is the actual maximum # sequences over all loci
       data.ns[locus] = com.ns;  
       data.ls[locus] = com.ls;
       data.npatt[locus] = com.npatt;
@@ -1444,6 +1486,204 @@ int ReadSeqData(char *seqfile, char *locusratef, char *heredityf, FILE*fout, cha
    return(0);
 }
 
+void printTraitData(FILE *fileout)
+{
+  int i,j;
+  fprintf(fileout, "Sp. ");
+  for(i=0; i<traitdata.ntrait; i++)
+    fprintf(fileout, " %8s", traitdata.traitName[i]);
+  for (j=0; j<traitdata.nind; j++){
+    fprintf(fileout, "\n%-4d", traitdata.indSpeciesMap[j]+1);
+    for (i=0; i<traitdata.ntrait; i++)
+      if (!traitdata.ismissing[i][j])
+	fprintf(fileout, " %8.3g", traitdata.y[i][j]);
+      else 
+	fprintf(fileout, "       NA");
+  }
+  fprintf(fileout, "\n");fflush(fileout);
+}
+
+int ReadTraitData(char *traitfile, FILE*fout)
+{
+/* Read trait data, set traitdata.  
+   There can be one or more traits, missing data allowed.
+   traitdata.nind was previously initialized either in GetOptions or ReadSpeciesTree.
+*/
+   FILE *ftrait=gfopen(traitfile,"r");
+   int lname = 24;  // max length for each trait variable name
+   int lline=10000; // max line length
+   char line[10000], name[24], *comment="*#[";
+   int i, j, jsp;
+
+   printf("\nReading Trait data from %s... ", traitfile);
+   fflush(stdout);
+   if(traitdata.ntrait>NTRAIT) {
+     printf("%d traits are too many for me. ", traitdata.ntrait);
+     error2("Raise NTRAIT?");
+   }
+
+   for (i=0; i<traitdata.ntrait; i++){
+     traitdata.traitName[i] = (char*)malloc( (lname+1)*sizeof(char) );
+     if(traitdata.traitName[i] == NULL) error2("Error while allocating memory for trait names.");
+   }
+
+   /* reading header with trait variable names */
+   for (i=0; i<2;){ /* reading the first 2 names. First should be 'Individual',
+		       second should be "Population", "clade", or "species" */
+     fscanf(ftrait, "%s", name);
+     if (strchr(comment,name[0])){ // ignoring the rest of the line
+       fgets(line, lline, ftrait); continue;}
+     i++;
+   }
+   for (i=0; i<traitdata.ntrait;){
+     if( fscanf (ftrait, "%s", traitdata.traitName[i]) == 0 ){
+       printf("Unable to read the name of %dth trait, in trait data file.\n",i+1);
+       exit(-1);
+     }
+     if (strchr(comment, traitdata.traitName[i][0])){ // ignoring the rest of the line
+       fgets(line, lline, ftrait); continue;}
+     traitdata.cleantrait[i] = 1;
+     i++;
+   }
+   fgets(line, lline, ftrait); // throwing away the rest of the line, if only the newline character.
+
+   /* for each individual = line ... */
+   for (j=0; j<traitdata.nind;){
+     fscanf (ftrait, "%s", name);
+     if(name[0]=='/' && name[1]=='/') break; // stop reading the file if "//"
+     if (strchr(comment,name[0])){           // ignoring the rest of the line
+       fgets(line, lline, ftrait); continue;}
+     // otherwise we just read the individual ID, which we don't care about.
+     /* ... read the species name */
+     if( fscanf (ftrait, "%s", name) == 0 ){
+       fprintf(stderr, "Unable to read the species name of individual %d, in trait data file.\n",j+1);
+       exit(-1);
+     }
+     for (jsp=0; jsp<sptree.nspecies; jsp++) {
+       if(strcmp(name, sptree.nodes[jsp].name) == 0) {
+	 traitdata.indSpeciesMap[j] = jsp; 
+	 break;
+       }
+     }
+     if(jsp==sptree.nspecies) {
+       fprintf(stderr, "\nspecies '%s' for the %dth individual in trait file not found in the control file.\n",name,j+1);
+       exit(-1);
+     }
+     /* ... read all the numerical (or NA=missing) values */
+     for (i=0; i<traitdata.ntrait;i++){
+       if(fscanf(ftrait, "%s", name) ==0  || (sscanf(name, "%lf", &traitdata.y[i][j])==0
+					      &&     strcmp(name, "NA"))) {
+	 fprintf(stderr, "Unable to read trait value for individual %d, trait %d. Read '%s'\n", j+1,i+1,name);
+	 exit(-1);
+       } // else successfully read either a number or 'NA'
+       if (!strcmp(name, "NA")) {
+	 traitdata.cleantrait[i] = 0;
+	 traitdata.ismissing[i][j]=1;
+	 traitdata.y[i][j]=DBL_MAX; 
+       }
+     }
+     fgets(line, lline, ftrait); // throwing away the rest of the line, if only the \n.
+     j++;
+   }
+   traitdata.nind = j;
+   fclose(ftrait);
+
+   printf("%d individuals and %d variables.\n", traitdata.nind, traitdata.ntrait);
+   if(noisy) printTraitData(stdout);
+   fprintf(fout,"\n\n\nPrinting out trait data\n\n");
+   printTraitData(fout);
+
+   return(0);
+}
+
+int StandardizeTraitData(FILE*fout)
+{
+  double var;
+  double * sumYbySp ;
+  int i, j, isp, nsp, * nibySp;
+
+  sumYbySp = (double*)malloc( sptree.nspecies * sizeof(double));
+  nibySp   = (int*)   malloc( sptree.nspecies * sizeof(int));
+
+  for (i=0; i<traitdata.ntrait; i++){
+    /* initialize then calculate species-specific sums and sample sizes */
+    for (isp=0; isp<sptree.nspecies; isp++){
+      sumYbySp[isp] = 0.0;
+      nibySp[isp] = 0;
+    }
+    for (j=0; j<traitdata.nind; j++){
+      if (!traitdata.ismissing[i][j]){
+	nibySp[  traitdata.indSpeciesMap[j] ]++;
+	sumYbySp[traitdata.indSpeciesMap[j]] += traitdata.y[i][j];
+      }
+    }
+    /* calculate weighted average */
+    traitdata.ybar[i]= 0.0;
+    traitdata.ni[i] = 0;
+    nsp=0; // # species for which data is available
+    for (isp=0; isp<sptree.nspecies; isp++){
+      if (nibySp[isp]){ // data available for at least 1 individual from that species
+	traitdata.ybar[i] += sumYbySp[isp] / nibySp[isp];
+	traitdata.ni[i]   += nibySp[isp];
+	nsp++;
+      }
+    }
+    if (traitdata.ni[i] <= 1) { /* quit if only 0 or 1 observation for the trait */
+      fprintf(stderr, "Error while standardizing trait data for %dth variable (%s): only %d observation.\n",
+	     i+1, traitdata.traitName[i], traitdata.ni[i]);
+      exit(-1);
+    }
+    traitdata.ybar[i] /= nsp;
+    /* calculate standard deviation from ybar */
+    var = 0.0;
+    for (j=0; j<traitdata.nind; j++){
+      if (!traitdata.ismissing[i][j]){
+	traitdata.y[i][j] -= traitdata.ybar[i]; /* centering now */
+	var += traitdata.y[i][j] * traitdata.y[i][j];
+      }
+    }
+    traitdata.scale[i]= sqrt( var / (traitdata.ni[i]-1) );
+    /* standardize the y values */
+    for (j=0; j<traitdata.nind; j++){
+      if (!traitdata.ismissing[i][j]){
+	traitdata.y[i][j] /= traitdata.scale[i]; /* re-scaling now */
+      }
+    }
+  }
+
+  free(sumYbySp); free(nibySp);
+  /* print means & sds to screen and out file */
+  printf(      "Trait sample size, mean (across populations) and standard deviation from that mean: \n    ");
+  fprintf(fout,"\nTrait sample size, mean (across populations) and standard deviation from that mean: \n    ");
+  for(i=0; i<traitdata.ntrait; i++){
+    printf(      " %8s", traitdata.traitName[i]);
+    fprintf(fout," %8s", traitdata.traitName[i]);
+  }
+  printf("\nn   "); fprintf(fout,"\nn   ");
+  for(i=0; i<traitdata.ntrait; i++){
+    printf(      " %8d", traitdata.ni[i]);
+    fprintf(fout," %8d", traitdata.ni[i]);
+  }
+  printf("\nmean"); fprintf(fout,"\nmean");
+  for(i=0; i<traitdata.ntrait; i++){
+    printf(      " %8.3g", traitdata.ybar[i]);
+    fprintf(fout," %8.3g", traitdata.ybar[i]);
+  }
+  printf("\nsd  "); fprintf(fout,"\nsd  ");
+  for(i=0; i<traitdata.ntrait; i++){
+    printf(      " %8.3g", traitdata.scale[i]);
+    fprintf(fout," %8.3g", traitdata.scale[i]);
+  }
+  printf(      "\n"); fflush(stdout);
+  fprintf(fout,"\n"); fflush(fout);
+  /* print standardized values to out file */
+  if(noisy) printf("Standardized trait data:\n");
+  if(noisy) printTraitData(stdout);
+  fprintf(fout,"\nStandardized trait data\n\n");
+  printTraitData(fout);
+
+  return(0);
+}
 
 int GetMem (char ipop[])
 {
@@ -1477,7 +1717,7 @@ int GetMem (char ipop[])
    Space for heredity scalars and locus rates is allocated in ReadSeqData().
    It would be fine to do it here.
 */
-   int locus,i,j,k, s1, stree;
+   int locus,i,j,k, s1, stree; // stree = number of bytes for gene trees
    double *conP;
 
    /* get mem for gnodes */
@@ -1540,6 +1780,9 @@ void FreeMem(void)
       free(data.fpatt[locus]);
       for(j=0;j<data.ns[locus]; j++)
          free(data.z[locus][j]);
+   }
+   for (j=0; j<traitdata.ntrait; j++){
+     free(traitdata.traitName[j]);
    }
 }
 
