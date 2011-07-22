@@ -43,6 +43,7 @@ struct CommonInfo {
    char cleandata, oldconP[NS*2-1];
    int ns, ls, lgene[1], model, clock, simulation;
    int seqtype, ngene, *pose, npatt, np, readpattern;
+   // np=#param in MCMC state that are printed out
    int ntime, ncatG, ncode, print, fix_rgene, posG[1];
    double alpha, pi[4], piG[1][4], *rates, rgene[1];
    double *conP;  /* not used */
@@ -128,13 +129,39 @@ struct TRAITDATA { /* trait data */
 			        in the Imap or sequence file. */
   char cleantrait[NTRAIT];   /* 1 if trait has no missing entries */
   char ismissing[NTRAIT][NS];/* 1 if entry missing for trait i and individual j */
-  int ni[NTRAIT];            // # of individuals with no missing data for trait i
+  int * ni;
+  int ** nij;          /* # individuals with no missing data for trait i (ni) and in species j (nij) */        
   double y[NTRAIT][NS];/* trait data, supposed to be continuous at this point
 			   first read from file than standardized */
   double ybar[NTRAIT]; /* strait (non-phylogenetic) mean taken over populations,
 			   not over individuals. Used to standardize each trait */
   double scale[NTRAIT];/* strait SD from ybar. Used to standardize each trait */
+  double ** ybarj;/* mean and SS for each species, after standardization */
+  double ** SSj;
 }  traitdata;
+
+struct TRAITMODEL {
+  double sigma0sq;/* hyperprior mean of total variance, between + within species */
+  double mu0;     /* hyperprior mean of ancestral value for standardized traits,
+		     default to sigma0=1 and mu0=0 in getOptions */
+  int nu0;        /* prior # obs. for the variance (nu) and mean (k). Defaults 1 and 1 */
+  int kappa0;
+  double kratio;
+  double priorSS;
+  double * hsq;   /* heredity: ratio of variance between species to total variance
+		     one for each trait */
+  double * log1mhsq;
+  /* warning: currently using uniform prior on (0,1) for hsq. A beta distribution could 
+     be implemented, with hyperparameters alpha, beta. Currently alpha=beta=1 */
+  double * loglik; /* log-prob of each trait given species tree, hsq and hyperprior parameters */
+} traitmodel;
+
+struct INDEPENDENTCONTRAST {
+  double ancestralState;
+  double oneVmone; /* 1' v^{-1} 1 */
+  double logDetV;
+  double contrastSS;
+};
 
 struct MCMCPARAMETERS {
    int resetFinetune, burnin, nsample, sampfreq, usedata, saveconP;
@@ -184,6 +211,13 @@ char *printSpItree(int itree);
 void printGtree(int printBlength);
 void checkGtree(void);
 int getab_beta(void);
+double completeLoglikTraitData(int traitIndex);
+double completeLoglikTraitData_all();
+double partialLoglikTraitData(int traitIndex);
+double partialLoglikTraitData_all();
+double getNu0multiplier(int nu0, int nindividuals);
+void updatePIC(int inode, int traitIndex, struct INDEPENDENTCONTRAST * pic);
+void printPIC(struct INDEPENDENTCONTRAST * pic,FILE * fout);
 
 extern int noisy, IncludeNodeLabel;
 char timestr[32];
@@ -343,8 +377,13 @@ int GetOptions (char *ctlf)
    for(is=0; is<NSPECIES; is++) 
       for(i=0; i<16; i++) 
          data.a_seqerr[is][i] = data.e_seqerr[is][i] = 0;
-   traitdata.nind = 0;      /* initializing trait data */
+   traitdata.nind = 0;      /* initializing trait data size and prior parameters */
    traitdata.ntrait = 0;
+   traitmodel.sigma0sq = 1.0; /* not implemented: options to read these values from control file */
+   traitmodel.mu0 = 0.0;
+   traitmodel.nu0 = 1;
+   traitmodel.kappa0 = 1;
+   traitmodel.priorSS= traitmodel.nu0 * traitmodel.sigma0sq;
 
    if (fctl) {
       if (noisy) printf ("\nReading options from %s..\n", ctlf);
@@ -1493,10 +1532,10 @@ void printTraitData(FILE *fileout)
   for(i=0; i<traitdata.ntrait; i++)
     fprintf(fileout, " %8s", traitdata.traitName[i]);
   for (j=0; j<traitdata.nind; j++){
-    fprintf(fileout, "\n%-4d", traitdata.indSpeciesMap[j]+1);
+    fprintf(fileout, "\n%-4s", (sptree.nodes[traitdata.indSpeciesMap[j]]).name);
     for (i=0; i<traitdata.ntrait; i++)
       if (!traitdata.ismissing[i][j])
-	fprintf(fileout, " %8.3g", traitdata.y[i][j]);
+	fprintf(fileout, " %8.5g", traitdata.y[i][j]);
       else 
 	fprintf(fileout, "       NA");
   }
@@ -1598,23 +1637,30 @@ int ReadTraitData(char *traitfile, FILE*fout)
 
 int StandardizeTraitData(FILE*fout)
 {
-  double var;
-  double * sumYbySp ;
-  int i, j, isp, nsp, * nibySp;
+  double var, mydiff;
+  int i, j, isp, nsp;
 
-  sumYbySp = (double*)malloc( sptree.nspecies * sizeof(double));
-  nibySp   = (int*)   malloc( sptree.nspecies * sizeof(int));
+  traitdata.ni = (int*) malloc(traitdata.ntrait * sizeof(int));
+  traitdata.nij= (int**)malloc(traitdata.ntrait * sizeof(int));
+  traitdata.ybarj= (double**) malloc(traitdata.ntrait * sizeof(double));
+  traitdata.SSj  = (double**) malloc(traitdata.ntrait * sizeof(double));
+
 
   for (i=0; i<traitdata.ntrait; i++){
     /* initialize then calculate species-specific sums and sample sizes */
+    traitdata.nij[i]  =   (int*) malloc(sptree.nspecies * sizeof(int));
+    traitdata.ybarj[i]=(double*) malloc(sptree.nspecies * sizeof(double));
+    traitdata.SSj[i]  =(double*) malloc(sptree.nspecies * sizeof(double));
+
     for (isp=0; isp<sptree.nspecies; isp++){
-      sumYbySp[isp] = 0.0;
-      nibySp[isp] = 0;
+      traitdata.ybarj[i][isp] = 0.0;
+      traitdata.SSj[i][isp]   = 0.0;
+      traitdata.nij[i][isp]   = 0;
     }
     for (j=0; j<traitdata.nind; j++){
       if (!traitdata.ismissing[i][j]){
-	nibySp[  traitdata.indSpeciesMap[j] ]++;
-	sumYbySp[traitdata.indSpeciesMap[j]] += traitdata.y[i][j];
+	traitdata.nij[i][  traitdata.indSpeciesMap[j]]++;
+	traitdata.ybarj[i][traitdata.indSpeciesMap[j]] += traitdata.y[i][j];
       }
     }
     /* calculate weighted average */
@@ -1622,9 +1668,10 @@ int StandardizeTraitData(FILE*fout)
     traitdata.ni[i] = 0;
     nsp=0; // # species for which data is available
     for (isp=0; isp<sptree.nspecies; isp++){
-      if (nibySp[isp]){ // data available for at least 1 individual from that species
-	traitdata.ybar[i] += sumYbySp[isp] / nibySp[isp];
-	traitdata.ni[i]   += nibySp[isp];
+       if (traitdata.nij[i][isp]){ // data available for at least 1 individual from that species
+	traitdata.ybarj[i][isp] /= traitdata.nij[i][isp];
+	traitdata.ybar[i]       += traitdata.ybarj[i][isp];
+	traitdata.ni[i]         += traitdata.nij[i][isp];
 	nsp++;
       }
     }
@@ -1649,9 +1696,25 @@ int StandardizeTraitData(FILE*fout)
 	traitdata.y[i][j] /= traitdata.scale[i]; /* re-scaling now */
       }
     }
+    /* calculate species-specific mean on standardized values */
+    for (isp=0; isp<sptree.nspecies; isp++){
+      if (traitdata.nij[i][isp]){ // data available for at least 1 individual from that species
+	traitdata.ybarj[i][isp] -= traitdata.ybar[i];
+	traitdata.ybarj[i][isp] /= traitdata.scale[i];
+      }
+    }
+    /* calculate species-specific  SS  on standardized values */
+    for (j=0; j<traitdata.nind; j++){
+      if (!traitdata.ismissing[i][j]){
+	mydiff = traitdata.y[i][j] - traitdata.ybarj[i][traitdata.indSpeciesMap[j]];
+	traitdata.SSj[i][traitdata.indSpeciesMap[j]] += mydiff * mydiff;
+      }
+    }
+    printf("SSj values, trait %d:\n", i+1);
+    for (isp=0; isp<sptree.nspecies; isp++)
+      printf("\tspecies %d: %8.4f\n", isp+1, traitdata.SSj[i][isp]);
   }
 
-  free(sumYbySp); free(nibySp);
   /* print means & sds to screen and out file */
   printf(      "Trait sample size, mean (across populations) and standard deviation from that mean: \n    ");
   fprintf(fout,"\nTrait sample size, mean (across populations) and standard deviation from that mean: \n    ");
@@ -1666,13 +1729,13 @@ int StandardizeTraitData(FILE*fout)
   }
   printf("\nmean"); fprintf(fout,"\nmean");
   for(i=0; i<traitdata.ntrait; i++){
-    printf(      " %8.3g", traitdata.ybar[i]);
-    fprintf(fout," %8.3g", traitdata.ybar[i]);
+    printf(      " %8.5g", traitdata.ybar[i]);
+    fprintf(fout," %8.5g", traitdata.ybar[i]);
   }
   printf("\nsd  "); fprintf(fout,"\nsd  ");
   for(i=0; i<traitdata.ntrait; i++){
-    printf(      " %8.3g", traitdata.scale[i]);
-    fprintf(fout," %8.3g", traitdata.scale[i]);
+    printf(      " %8.5g", traitdata.scale[i]);
+    fprintf(fout," %8.5g", traitdata.scale[i]);
   }
   printf(      "\n"); fflush(stdout);
   fprintf(fout,"\n"); fflush(fout);
@@ -1783,7 +1846,13 @@ void FreeMem(void)
    }
    for (j=0; j<traitdata.ntrait; j++){
      free(traitdata.traitName[j]);
+     free(traitdata.nij[j]);
+     free(traitdata.ybarj[j]);
+     free(traitdata.SSj[j]);
    }
+   free(traitdata.nij);
+   free(traitdata.ybarj);
+   free(traitdata.SSj);
 }
 
 int UseLocus (int locus, int copytreeconP, int useData, int setSeqName)
@@ -3498,7 +3567,7 @@ int GetInitials (void)
       printf("\nStarting species tree = %s\n", printSpItree(sptree.Itree));
       for(i=0, ntheta=ntau=0; i<sptree.nnode; i++) {
          printf("node %2d %-20s ", i+1, sptree.nodes[i].name);
-         printf("theta = %9.6f  tau = %9.6f\n", sptree.nodes[i].theta, sptree.nodes[i].age);
+         printf("theta = %9.6f  tau = %9.6g\n", sptree.nodes[i].theta, sptree.nodes[i].age);
          ntheta += (sptree.nodes[i].theta>0);
          ntau   += (sptree.nodes[i].age>0);
       }
@@ -3534,9 +3603,20 @@ int GetInitials (void)
       }
    }
 
+   /* traits: heredity hsq = proportion of variance between species */
+   if (traitdata.ntrait){
+     traitmodel.hsq     = (double*) malloc(traitdata.ntrait * sizeof(double));
+     traitmodel.log1mhsq= (double*) malloc(traitdata.ntrait * sizeof(double));
+     for (i=0; i<traitdata.ntrait; i++){
+       traitmodel.hsq[i]  = 0.9; //0.5+0.5*rndu();
+       // fixed: 0.9 used to check PIC correctness.
+       traitmodel.log1mhsq[i]= log(1-traitmodel.hsq[i]);
+     }
+   }
+
    np = ntheta + ntau + data.nseqerr*16
       + (data.est_locusrate == 1)
-      + (data.est_heredity == 1)*min2(10, data.ngene);
+      + (data.est_heredity == 1)*min2(10, data.ngene) + min2(20, traitdata.ntrait);
    if(sptree.nspecies == 1) np += data.ngene;   /* t_MRCA */
    return(np);
 }
@@ -3595,6 +3675,10 @@ int collectx (FILE* fout, double x[])
          if(fout) fprintf(fout, "\tt_MRCA_L%d", i+1);
          x[k++] = gnodes[i][data.root[i]].age;
       }
+   for (i=0; i<min2(20, traitdata.ntrait); i++) {
+     if(fout) fprintf(fout, "\th2_%s", traitdata.traitName[i]);
+     x[k++] = traitmodel.hsq[i];
+   }
    if(k != com.np) {
       if(com.np!=-1) 
          printf("np %d != %d,  np reset in collectx().", k, com.np);
@@ -3644,9 +3728,10 @@ int MCMC (FILE* fout)
    char BtreeStr[NSPECIES], line[16000], *mcmctmp="mcmc.tmp";
    int locus, j,k, ir, Btree=0, bit, lline=16000;
    double pBtree=0;
-   double *x, *mx, *freqtree, lnL, PrSplit=0.5, postnodes[NSPECIES-1]={0};
+   double *x, *mx, *freqtree, lnL, lnLtrait, PrSplit=0.5, postnodes[NSPECIES-1]={0};
    double Pmodel=0, Pjump[7]={0}, nround=0;
    double PtauThreshold[NSPECIES][2]={{0}}, tauThreshold[2]={2E-5, 2E-4};
+   int traitv;
 
    noisy=3;
 
@@ -3677,6 +3762,7 @@ int MCMC (FILE* fout)
 
    k = max2(4 + data.ngene, sptree.nspecies*3+3);
    k += data.nseqerr*16;
+   k += max2(20, traitdata.ntrait);
    x = (double*)malloc(k*2*sizeof(double));
    mx = x + k;
    if(x==NULL) error2("oom");
@@ -3693,13 +3779,18 @@ int MCMC (FILE* fout)
       }
       data.lnpGBi[locus] = lnpGB_ThetaTau(locus);
    }
+   /* initialize likelihood of trait data for each trait variable */
+   if (traitdata.ntrait){
+     traitmodel.loglik  = (double*) malloc(traitdata.ntrait * sizeof(double));
+     lnLtrait = completeLoglikTraitData_all();
+   }
 
    collectx(fmcmc, x);
 
    printf("\nInitial parameters, np = %d (gene trees generated from the prior):\n", com.np);
    for(j=0; j<com.np; j++) printf("%9.5f",x[j]);
    for(j=0; j<data.maxns*2-1; j++) com.oldconP[j]=0;
-   lnL = lnpData(data.lnpDi);
+   lnL = lnpData(data.lnpDi) + lnLtrait;
    printf("\nlnL0 =%12.3f\n", lnL);
 
    for(ir=-mcmc.burnin,nround=0; ir<mcmc.sampfreq*mcmc.nsample; ir++) {
@@ -3712,10 +3803,12 @@ int MCMC (FILE* fout)
          nround=0;  Pmodel=0;
          zero(Pjump, nsteps);
          zero(mx, com.np); 
+	 // fixit: use window size tuning parameter for hsq updates and finetune it here.
       }
       nround++;
 
       if(sptree.speciesdelimitation) {
+	// fixit: for each move, build likelihood ratio of trait data into acceptance prob.
          if(rndu()<PrSplit)
             Pmodel  += UpdateSplitSpecies(&lnL, com.space, PrSplit);
          else
@@ -3789,6 +3882,11 @@ int MCMC (FILE* fout)
    free(data.lnpGBi);
    free(data.lnpDi);
    free(data.Imap);
+   if (traitdata.ntrait){
+     free(traitmodel.loglik);
+     free(traitmodel.hsq);
+     free(traitmodel.log1mhsq);
+   }
 
    if(data.est_heredity || data.est_locusrate) 
       free(data.heredity);
@@ -3874,6 +3972,140 @@ int MCMC (FILE* fout)
       }
    }
    return(0);
+}
+
+double completeLoglikTraitData_all()
+{ /* log likelihood of all trait data given species tree and hsq values.
+     Also fills in traitmodel.loglik with PARTIAL loglik values */
+   int traitv;
+   double lnL=0, y;
+   for (traitv=0; traitv<traitdata.ntrait; traitv++)
+     lnL += completeLoglikTraitData(traitv);
+   return(lnL);
+}
+
+double partialLoglikTraitData_all()
+{ 
+  int traitv;
+  double lnL=0;
+  for (traitv=0; traitv<traitdata.ntrait; traitv++)
+    lnL += partialLoglikTraitData(traitv);
+  return (lnL);
+}
+
+double completeLoglikTraitData(int traitIndex)
+{ /* returns complete loglik value but also fills 
+     fills in traitmodel.loglik with PARTIAL loglik values */
+  double logp, nu0mult, kratio;
+  int n = traitdata.ni[traitIndex];
+
+  /* partial loglik */
+  logp = partialLoglikTraitData(traitIndex);
+  traitmodel.loglik[traitIndex] = logp;
+  printf("trait %d, partial loglik=%8.4f\n",traitIndex+1,logp);
+
+  /* now completing */
+  kratio = traitmodel.kappa0 / (double)(traitmodel.kappa0 + n);
+  nu0mult = getNu0multiplier(traitmodel.nu0, n);
+  logp += - log(Pi)*n/2 + log(kratio)/2 + nu0mult
+          + log(traitmodel.priorSS)*traitmodel.nu0 /2;
+  /* Pi defined in paml.h */
+  printf("trait %d, complete loglik=%8.4f\n",traitIndex+1,logp);
+  return(logp);
+}
+
+double partialLoglikTraitData (int traitIndex)
+{ /* log likelihood of trait: part that varies with the species tree.
+     Does not include things that might vary with kappa0, nu0 and sigma0 */
+  int n;
+  double lnL, kratio, bias, postSS;
+  struct INDEPENDENTCONTRAST tempIC;
+
+  n = traitdata.ni[traitIndex];
+  kratio = traitmodel.kappa0 / (double)(traitmodel.kappa0 + n);
+  updatePIC(sptree.nspecies, traitIndex, &tempIC);
+  //printPIC(&tempIC,stdout);
+  bias = tempIC.ancestralState-traitmodel.mu0;
+  postSS  = traitmodel.priorSS + tempIC.contrastSS + tempIC.oneVmone *kratio*bias*bias;
+  lnL  = - tempIC.logDetV/2 - log(postSS)*(traitmodel.nu0 + n)/2;
+  return(lnL);
+}
+
+double  getNu0multiplier(int nu0, int n)
+{ /* returns the log of Gamma((nu0+n)/2) / Gamma(nu0/2). 
+     valid arguments are nu0>0 and n>=0. Return 0 if either condition is not met. */
+  double val=0.0;
+  while (n>1){
+    val += log( (nu0+n)/2.0 -1.0 );
+    n--; n--;
+  } /* now n=0 in which case we are done, or n=1 */
+  if (n==1){
+    while (nu0 > 2){
+      val += log((double)(nu0-1)/(double)(nu0-2));
+      nu0--; nu0--;
+    }
+    if (nu0==1) val -= log(Pi)/2;
+    if (nu0==2) val += log(Pi)/2 -log(2);
+  }
+  return(val);
+}
+
+void printPIC(struct INDEPENDENTCONTRAST * pic,FILE * fout)
+{
+  printf("\tancestral state: %8.4g\n",pic->ancestralState);
+  printf("\tlog det V      : %8.4g\n",pic->logDetV);
+  printf("\t1'V^{-1}1      : %8.4g\n",pic->oneVmone);
+  printf("\tSS of contrasts: %8.4g\n",pic->contrastSS);
+}
+
+void  updatePIC(int inode, int traitIndex, struct INDEPENDENTCONTRAST * pic)
+{ /* use data from one trait variable, species tree topology with branch lengths and hsq.
+     return object with the contrasts' SS, 1'V^{-1}1, estimated ancestral value and log|V|.
+     Even though the species tree changes through the MCMC, populations
+     that are collapsed are reprented by polytomies at age 0.
+     We can run the PIC as usual.
+     Post-order tree traversal. */
+  int k, nind;
+  double t0, sum1Am1, w0, contrast;
+  if (inode == sptree.nspecies) // root
+    t0 = 0.0;
+  else
+    t0 = (sptree.nodes[sptree.nodes[inode].father].age - sptree.nodes[inode].age)
+              * traitmodel.hsq[traitIndex] / sptree.nodes[sptree.nspecies].age;
+
+  if (sptree.nodes[inode].nson==0){ // leaf
+    nind = traitdata.nij[traitIndex][inode];
+    if (nind==0)
+      error2("assuming at least one individual per putative species in updatePIC");
+
+    pic->oneVmone = 1/(t0 + (1 - traitmodel.hsq[traitIndex]) / nind);
+    pic->logDetV = log(1 +  t0*nind/(1 - traitmodel.hsq[traitIndex]))
+                   + nind * traitmodel.log1mhsq[traitIndex];
+    pic->ancestralState = traitdata.ybarj[traitIndex][inode];
+    if (nind==1) pic->contrastSS = 0.0;
+    else
+      pic->contrastSS = traitdata.SSj[traitIndex][inode] / (1 - traitmodel.hsq[traitIndex]);
+    return;
+  } 
+  else {
+    if (sptree.nodes[inode].nson!=2)
+      error2("Species tree with polytomies: need to be arbitrarily resolved");
+    struct INDEPENDENTCONTRAST pic0, pic1;
+    updatePIC( sptree.nodes[inode].sons[0], traitIndex, &pic0);
+    updatePIC( sptree.nodes[inode].sons[1], traitIndex, &pic1);
+
+    sum1Am1 = pic0.oneVmone + pic1.oneVmone;
+    w0 = pic0.oneVmone / sum1Am1; // weight of son0 for ancestral state
+
+    pic->oneVmone = 1/(t0 + 1/sum1Am1);
+    pic->logDetV = log(1 +  t0 * sum1Am1) + pic0.logDetV + pic1.logDetV;
+    pic->ancestralState = w0*pic0.ancestralState +(1-w0)*pic1.ancestralState;
+    contrast = pic0.ancestralState - pic1.ancestralState; // unnormalized contrast
+    pic->contrastSS = contrast*contrast/(1/pic0.oneVmone + 1/pic1.oneVmone)
+                      + pic0.contrastSS + pic1.contrastSS;
+  }
+  //printf("in update PIC node, trait %d, node %d:\n",traitIndex+1, inode+1);
+  //printPIC(pic,stdout);
 }
 
 #endif
