@@ -250,7 +250,7 @@ int main (int argc, char*argv[])
 #else
    char ctlf[128]="MCcoal.ctl";
 #endif
-   char VStr[64]="Version 2.1, May 2011, with trait modification, July 2011\n";
+   char VStr[64]="iBPP version 2.1, May 2011, with trait modification, July 2011\n";
    FILE *fout;
    int i;
 
