@@ -101,6 +101,14 @@ struct DATA {
    double e_seqerr[NSPECIES][4*4];
    int nseqerr, iseqerr[NSPECIES];
 }  data;
+struct TRAITDATA {
+  int ntrait, nind, nij, *indSpeciesMap;
+  double **y;
+}  traitdata;
+struct TRAITMODEL {
+  double sigma0sq,nu0,mu0,kappa0,priorSS,*hsq,*scale,*mu,fixedHsq;
+  int hsqModel; // 0=uniform on (0,1), 1=fixed, 2=neutral 
+} traitmodel;
 
 #else
 
@@ -144,9 +152,8 @@ struct TRAITMODEL {
   double sigma0sq;/* hyperprior mean of total variance, between + within species */
   double mu0;     /* hyperprior mean of ancestral value for standardized traits,
 		     default to sigma0=1 and mu0=0 in getOptions */
-  int nu0;        /* prior # obs. for the variance (nu) and mean (k). Defaults 1 and 1 */
-  int kappa0;
-  double kratio;
+  double nu0;     /* prior # obs. for the variance (nu) and mean (k). Defaults 1 and 1 */
+  double kappa0;
   double priorSS;
   double * hsq;   /* heredity: ratio of variance between species to total variance
 		     one for each trait */
@@ -154,7 +161,17 @@ struct TRAITMODEL {
   /* warning: currently using uniform prior on (0,1) for hsq. A beta distribution could 
      be implemented, with hyperparameters alpha, beta. Currently alpha=beta=1 */
   double * loglik; /* log-prob of each trait given species tree, hsq and hyperprior parameters */
+  double * proposedLoglik;
 } traitmodel;
+
+struct MCMCPARAMETERS {
+   int resetFinetune, burnin, nsample, sampfreq, usedata, saveconP;
+   int usetraitdata; /* usedata = use sequence data. Option usedata=1 means use both seq & trait data. */
+   int print, moveinnode, RJalgorithm;
+   double finetune[8], RJfinetune[2];
+}  mcmc;                /* control parameters */
+
+#endif
 
 struct INDEPENDENTCONTRAST {
   double ancestralState;
@@ -162,14 +179,6 @@ struct INDEPENDENTCONTRAST {
   double logDetV;
   double contrastSS;
 };
-
-struct MCMCPARAMETERS {
-   int resetFinetune, burnin, nsample, sampfreq, usedata, saveconP;
-   int print, moveinnode, RJalgorithm;
-   double finetune[7], RJfinetune[2];
-}  mcmc;                /* control parameters */
-
-#endif
 
 int GetOptions (char *ctlf);
 int GetOptionsSimulation (char *ctlf);
@@ -199,25 +208,29 @@ double UpdateGB_InternalNode(double* lnL, double finetune);
 double UpdateGB_SPR(double* lnL, double finetune);
 int NodeSlider(double eps);
 double UpdateTheta(double finetune, double space[]);
-double UpdateTau(double *lnL, double finetune, double space[]);
+double UpdateTau(double *lnL, double *loglikTd, double finetune, double space[]);
 double mixing(double* lnL, double finetune, double space[]);
-double UpdateSplitSpecies(double *lnL, double space[], double PrSplit);
-double UpdateJoinSpecies(double *lnL, double space[], double PrSplit);
+double UpdateSplitSpecies(double *lnL, double *loglikTd, double space[], double PrSplit);
+double UpdateJoinSpecies(double *lnL, double *loglikTd, double space[], double PrSplit);
 double UpdateLocusrateHeredity(double* lnL, double finetune);
 double UpdateSequenceErrors(double* lnL, double finetune, double space[]);
+double UpdateTraitHsq (double* loglikT, double finetune);
 void GraftNode(int source, int target, double age, int ipop);
 int MatchGTree(void);
 char *printSpItree(int itree);
 void printGtree(int printBlength);
 void checkGtree(void);
 int getab_beta(void);
-double completeLoglikTraitData(int traitIndex);
-double completeLoglikTraitData_all();
+double completeLoglikTraitData(int traitIndex, FILE * fout);
+void   completeLoglikTraitData_all(FILE * fout, double * logLikTrait);
 double partialLoglikTraitData(int traitIndex);
 double partialLoglikTraitData_all();
-double getNu0multiplier(int nu0, int nindividuals);
+double getNu0multiplier(double nu0, int nindividuals); // Warning: result valid only if nu0>0 integer
 void updatePIC(int inode, int traitIndex, struct INDEPENDENTCONTRAST * pic);
 void printPIC(struct INDEPENDENTCONTRAST * pic,FILE * fout);
+void printTraitLikelihoods(FILE * fout, double lnLtrait);
+void setTraitHsq(int traitIndex, double hsq);
+void EvolveBM (int inode, int traitv, double parentState);
 
 extern int noisy, IncludeNodeLabel;
 char timestr[32];
@@ -278,13 +291,17 @@ int main (int argc, char*argv[])
 
 int GetOptionsSimulation (char *ctlf)
 {
-   int nopt=9, lline=4096, iopt, i, j, is, ierror;
+   int nopt=13, lline=4096, iopt, i, j, is, ierror;
    char line[4096],*pline, opt[32], *comment="*#";
    char *optstr[] = {"seed", "seqfile", "treefile", "Imapfile", "species&tree", 
-                     "migration", "sequenceerror", "loci&length", "locusrate"};
+                     "migration", "sequenceerror", "loci&length", "locusrate",
+		     "traitfile", "ntraits","nindT","hsq"};
    char name[LSPNAME];
    double t=1;
    FILE  *fctl=gfopen (ctlf, "r");
+
+   traitdata.nind = 0;
+   traitdata.ntrait = 0;
 
    strcpy(com.Imapf, "Imap.txt");
    if (fctl) {
@@ -344,6 +361,21 @@ int GetOptionsSimulation (char *ctlf)
 
                   case ( 7): sscanf(pline+1, "%d%d", &com.ngene, &com.ls);  break;
                   case ( 8): sscanf(pline+1, "%lf", &com.a_locusrate);  break;  /* gamma rates for loci */
+                  case ( 9): sscanf(pline+1, "%s", com.traitf);   break;
+                  case (10): traitdata.ntrait=(int)t; break;
+                  case (11): traitdata.nind=(int)t;   break;
+                  case (12): /* hsq model for simulations */
+		    sscanf(pline+1, "%d",&traitmodel.hsqModel);
+		    if (traitmodel.hsqModel == 1){
+		      sscanf(pline+1, "%d:%lf", &traitmodel.hsqModel, &traitmodel.fixedHsq);
+		      if (traitmodel.fixedHsq<=0 || traitmodel.fixedHsq>1)
+			error2("error in control file: bad fixed Hsq parameter. Must be between 0 and 1.");
+		    }
+		    if (traitmodel.hsqModel > 1 || traitmodel.hsqModel < 0){
+		      printf("hsq model ill specified. Must be 0 (unif) or 1 (fixed). Resetting to uniform.\n");
+		      traitmodel.hsqModel = 0;
+		    }
+		    break;
                }
                break;
             }
@@ -355,6 +387,14 @@ int GetOptionsSimulation (char *ctlf)
    }
    else
       if (noisy) error2("\nno ctl file..");
+   if(traitdata.ntrait){
+     traitmodel.sigma0sq = 1.0;
+     traitmodel.mu0 = 0.0;
+     traitmodel.nu0 = 1.0; /* default values. Cannot simulate under prior nu0 or kappa0 = 0. */
+     traitmodel.kappa0 = 1.0;
+     traitmodel.priorSS= traitmodel.nu0 * traitmodel.sigma0sq;
+   }
+
    return(0);
 }
 
@@ -362,13 +402,13 @@ int GetOptionsSimulation (char *ctlf)
 
 int GetOptions (char *ctlf)
 {
-   int nopt=24, lline=4096, locfields[1000], iopt, i, is, ierror;
+   int nopt=28, lline=4096, locfields[1000], iopt, i, is, ierror;
    char line[4096],*pline, opt[32], *comment="*#", *seqerrstr="0EF";
    char *optstr[] = {"seed", "seqfile", "Imapfile", "outfile", "mcmcfile", "speciesdelimitation", 
                      "uniformrootedtrees", "species&tree", "usedata", "nloci", "cleandata", 
                      "thetaprior", "tauprior", "heredity", "locusrate", "sequenceerror", 
                      "finetune", "print", "burnin", "sampfreq", "nsample",
-		     "traitfile", "ntraits","nindT"};
+		     "traitfile", "ntraits","nindT", "useseqdata", "usetraitdata","nu0","kappa0"};
    char name[LSPNAME];
    double t=1, *eps=mcmc.finetune;
    FILE  *fctl=gfopen (ctlf, "r");
@@ -381,9 +421,8 @@ int GetOptions (char *ctlf)
    traitdata.ntrait = 0;
    traitmodel.sigma0sq = 1.0; /* not implemented: options to read these values from control file */
    traitmodel.mu0 = 0.0;
-   traitmodel.nu0 = 1;
-   traitmodel.kappa0 = 1;
-   traitmodel.priorSS= traitmodel.nu0 * traitmodel.sigma0sq;
+   traitmodel.nu0 = 1.0;
+   traitmodel.kappa0 = 1.0;
 
    if (fctl) {
       if (noisy) printf ("\nReading options from %s..\n", ctlf);
@@ -429,7 +468,10 @@ int GetOptions (char *ctlf)
                      if(sptree.nspecies>8*sizeof(int)) error2("NSPECIES larger than size of int.");
                      ReadSpeciesTree(fctl, pline+1);
                      break;
-                  case ( 8): mcmc.usedata=(int)t;   break;
+                  case ( 8): /* using both sequence and trait data (if available) */
+		     mcmc.usedata=(int)t;
+		     mcmc.usetraitdata=(int)t;
+		     break;
                   case ( 9): data.ngene=(int)t;     break;
                   case (10): com.cleandata=(int)t;  break;
                   case (11): sscanf(pline+1, "%lf%lf", &data.theta_prior[0], &data.theta_prior[1]);
@@ -478,7 +520,7 @@ int GetOptions (char *ctlf)
                      break;
 
                   case (16):
-                     sscanf(pline+1,"%d:%lf%lf%lf%lf%lf%lf%lf", &mcmc.resetFinetune, eps,eps+1,eps+2,eps+3,eps+4,eps+5,eps+6);
+                     sscanf(pline+1,"%d:%lf%lf%lf%lf%lf%lf%lf%lf", &mcmc.resetFinetune, eps,eps+1,eps+2,eps+3,eps+4,eps+5,eps+6,eps+7);
                      break;
                   case (17): mcmc.print=(int)t;     break;
                   case (18): mcmc.burnin=(int)t;    break;
@@ -486,7 +528,23 @@ int GetOptions (char *ctlf)
                   case (20): mcmc.nsample=(int)t;   break;
                   case (21): sscanf(pline+1, "%s", com.traitf);   break;
                   case (22): traitdata.ntrait=(int)t; break;
-                  case (23): traitdata.nind=(int)t; break;
+                  case (23): traitdata.nind=(int)t;   break;
+                  case (24): mcmc.usedata=(int)t;     break; /* sequence data */
+                  case (25): mcmc.usetraitdata=(int)t;break; /* trait data    */
+                  case (26):
+		    traitmodel.nu0 = (double)t;
+		    printf("\nprior weight on phenotypic trait variance nu_0 = %.2f", traitmodel.nu0);
+		    puts("\n                  (hypothetical # prior observations)");
+		    if(traitmodel.nu0<0)
+		      error2("Can't be negative.");
+		    break;
+                  case (27):
+		    traitmodel.kappa0 = (double)t;
+		    printf("\nprior weight on phenotypic trait mean kappa_0 = %.2f", traitmodel.kappa0);
+		    puts("\n                  (hypothetical # prior observations)");
+		    if(traitmodel.kappa0<0)
+		      error2("Can't be negative.");
+		    break;
                }
                break;
             }
@@ -498,6 +556,8 @@ int GetOptions (char *ctlf)
    }
    else
       if (noisy) error2("\nno ctl file..");
+   if (traitdata.ntrait==0) mcmc.usetraitdata= 0;
+   traitmodel.priorSS= traitmodel.nu0 * traitmodel.sigma0sq;
 
    return(0);
 }
@@ -1120,7 +1180,7 @@ void PMismatch3s (void)
    int ii, nii=7, ls0[100]={200, 400, 500, 1000, 2000, 4000, 10000};
    int nr=10000000, ir, i,j, gtree=-1, n[5]={0}, etree,etree2,etree3,every=100;
 
-   printf("\nPr{S-G mismatch} = %f from formula.\n",2./3*exp(-2*(t_HCG-t_HC)/theta_HC));
+   printf("\nPr{S-G mismatch} = %3f from formula.\n",2./3*exp(-2*(t_HCG-t_HC)/theta_HC));
    puts("Ties in genetree are removed in the following calculation.");
    every=max2(every,nr/1000);
    for(ii=0; ii<nii; ii++) {
@@ -1189,7 +1249,7 @@ void PMismatch3s (void)
 void SimulateData (void)
 {
    char *zt[NS], *concatF="concatenated.txt", timestr[32];
-   FILE *fseq=NULL, *ftree=NULL, *fImap=NULL;
+   FILE *fseq=NULL, *ftree=NULL, *fImap=NULL, *ftrait=NULL;
    double rlocus, rlocusold=1, u;
    int nr=com.ngene, ir, i,j,k, variable_ns=0, nseqsp0[NSPECIES], ispecies, h;
    FILE *fconcat = (com.seqf[0] ? gfopen(concatF,"w") : NULL); 
@@ -1204,6 +1264,10 @@ void SimulateData (void)
    if(com.outf[0]) {
       printf("trees go into %s.\n", com.outf);
       ftree=gfopen(com.outf,"w");
+   }
+   if(com.traitf[0]) {
+      printf("traits go into %s.\n", com.traitf);
+      ftrait=gfopen(com.traitf,"w");
    }
 
    if(fconcat) {
@@ -1245,7 +1309,9 @@ void SimulateData (void)
       }
 
       if(com.a_locusrate) {
-         rlocus = rndgamma(com.a_locusrate);
+         rlocus = rndgamma(com.a_locusrate) / com.a_locusrate;
+	 /* line above changed by Cecile Ane, 11/1/2011: divided the rate by 
+	    alpha (com.a_locusrate) to normalize the gamma distribution to mean 1.0 */
          printf("rate for locus %2d = %.5f\n", ir+1, rlocus);
          for(j=0; j<sptree.nspecies*2-1; j++) {
             sptree.nodes[j].theta *= rlocus/rlocusold;
@@ -1317,6 +1383,66 @@ void SimulateData (void)
       printf("Counts of migrations averaged over replicates\n", mtMRCA/nr);
       matout(F0, mM, (sptree.nspecies*2-1), (sptree.nspecies*2-1));
    }
+
+   if(ftrait && traitdata.ntrait) {
+     traitdata.nij = max2(1, traitdata.nind / sptree.nspecies);
+     traitdata.nind = traitdata.nij * sptree.nspecies;  /* same ni across all species */
+     printf("ntrait=%d, %d individuals per species\n",traitdata.ntrait, traitdata.nij);
+     if (traitmodel.hsqModel == 0)
+       printf("trait heredity h2 uniform in (0,1)\n");
+     if (traitmodel.hsqModel == 1)
+       printf("trait heredity h2 all fixed to %.3f\n",traitmodel.fixedHsq);
+     traitmodel.hsq     = (double*) malloc(traitdata.ntrait * sizeof(double));
+     traitmodel.mu      = (double*) malloc(traitdata.ntrait * sizeof(double));
+     traitmodel.scale   = (double*) malloc(traitdata.ntrait * sizeof(double));
+     traitdata.y        = (double**)malloc(traitdata.ntrait * sizeof(double*));
+     traitdata.indSpeciesMap=(int*) malloc(traitdata.nind * sizeof(int));
+     for (j=0, k=0; j<sptree.nspecies; j++)
+       for (i=0; i<traitdata.nij; i++, k++)
+	 traitdata.indSpeciesMap[k] = j; //has name sptree.nodes[j].name
+
+     for (i=0; i<traitdata.ntrait; i++){
+       if (traitmodel.hsqModel == 0)
+	 traitmodel.hsq[i]= rndu();  /* hsq values uniform in (0, 1) */
+       if (traitmodel.hsqModel == 1) 
+	 traitmodel.hsq[i] = traitmodel.fixedHsq;
+       u = rndNormal();
+       traitmodel.scale[i] = sqrt(traitmodel.priorSS/(u*u)); /* inv-chi2, assumes nu0=1. would need sum_{i=1}^{nu0} ui*ui */
+       traitmodel.mu[i] = rndNormal()*traitmodel.scale[i]/sqrt(traitmodel.kappa0) + traitmodel.mu0;
+       traitdata.y[i] = (double*)malloc(traitdata.nind * sizeof(double));
+       EvolveBM(sptree.root, i, traitmodel.mu[i]);
+       // turn off standardization when estimating these simulated data?
+     }
+     fprintf(ftrait, "Ind \tSpecies");
+     for (h=0; h<traitdata.ntrait; h++)
+       fprintf(ftrait, "\ttrait%-5d",h+1);
+     fprintf(ftrait, "\n");
+     for (j=0,k=0; j<sptree.nspecies; j++)
+       for (i=0; i<traitdata.nij; i++, k++){
+	 fprintf(ftrait, "%-4d\t%-6s",k+1,sptree.nodes[j].name);
+	 for (h=0; h<traitdata.ntrait; h++)
+	   fprintf(ftrait, "\t%10.7f",traitdata.y[h][k]);
+	 fprintf(ftrait, "\n");
+       }
+     fprintf(ftrait, "*   \thsq   ");
+     for (h=0; h<traitdata.ntrait; h++)
+       fprintf(ftrait, "\t%10.7f",traitmodel.hsq[h]);
+     fprintf(ftrait, "\n*   \tanc   ");
+     for (h=0; h<traitdata.ntrait; h++)
+       fprintf(ftrait, "\t%10.7f",traitmodel.mu[h]);
+     fprintf(ftrait, "\n*   \tscale ");
+     for (h=0; h<traitdata.ntrait; h++)
+       fprintf(ftrait, "\t%10.7f",traitmodel.scale[h]);
+     fprintf(ftrait, "\n");
+     fclose(ftrait);
+     free(traitmodel.hsq);
+     free(traitmodel.mu);
+     free(traitmodel.scale);
+     free(traitdata.indSpeciesMap);
+     for (i=0; i<traitdata.ntrait; i++)
+       free(traitdata.y[i]);
+     free(traitdata.y);
+   }
    exit(0);
 }
 
@@ -1350,6 +1476,30 @@ void EvolveJC (int inode)
    }
 }
 
+void EvolveBM (int inode, int traitv, double parentState)
+{
+  /* simulate from Brownian motion along the species tree */
+  int i, is,ison;
+  double r, ti;
+
+  if (sptree.nodes[inode].nson == 0){ /* leaf: simulate several individuals */
+    for (i=0; i<traitdata.nij; i++){
+      r = rndNormal() * traitmodel.scale[traitv] * sqrt(1-traitmodel.hsq[traitv]); 
+      traitdata.y[traitv][inode*traitdata.nij + i] = parentState + r;
+      /* printf("simulated value %8.4f for trait %d, species %s, individual %d\n",
+	     traitdata.y[traitv][inode*traitdata.nij + i],
+	     traitv, sptree.nodes[inode].name, inode*traitdata.nij + i);*/
+    }
+  }
+  else
+    for (is=0; is<sptree.nodes[inode].nson; is++) {
+      ison = sptree.nodes[inode].sons[is];
+      ti = (sptree.nodes[inode].age - sptree.nodes[ison].age) / sptree.nodes[sptree.nspecies].age;
+      r = rndNormal() * traitmodel.scale[traitv] * sqrt(traitmodel.hsq[traitv] * ti);
+      //printf("node %d, ti=%8.4f, state=%8.4f\n",ison+1,ti,parentState+r);
+      EvolveBM(ison, traitv, parentState + r);
+    }
+}
 
 #else
 
@@ -1548,7 +1698,9 @@ int ReadTraitData(char *traitfile, FILE*fout)
    There can be one or more traits, missing data allowed.
    traitdata.nind was previously initialized either in GetOptions or ReadSpeciesTree.
 */
-   FILE *ftrait=gfopen(traitfile,"r");
+   if (traitfile==NULL || traitfile[0]==0)
+     return(0);
+
    int lname = 24;  // max length for each trait variable name
    int lline=10000; // max line length
    char line[10000], name[24], *comment="*#[";
@@ -1556,6 +1708,7 @@ int ReadTraitData(char *traitfile, FILE*fout)
 
    printf("\nReading Trait data from %s... ", traitfile);
    fflush(stdout);
+   FILE *ftrait=gfopen(traitfile,"r");
    if(traitdata.ntrait>NTRAIT) {
      printf("%d traits are too many for me. ", traitdata.ntrait);
      error2("Raise NTRAIT?");
@@ -1640,11 +1793,12 @@ int StandardizeTraitData(FILE*fout)
   double var, mydiff;
   int i, j, isp, nsp;
 
-  traitdata.ni = (int*) malloc(traitdata.ntrait * sizeof(int));
-  traitdata.nij= (int**)malloc(traitdata.ntrait * sizeof(int));
-  traitdata.ybarj= (double**) malloc(traitdata.ntrait * sizeof(double));
-  traitdata.SSj  = (double**) malloc(traitdata.ntrait * sizeof(double));
+  if (!mcmc.usetraitdata) return(0);
 
+  traitdata.ni = (int*) malloc(traitdata.ntrait * sizeof(int));
+  traitdata.nij= (int**)malloc(traitdata.ntrait * sizeof(int*));
+  traitdata.ybarj= (double**) malloc(traitdata.ntrait * sizeof(double*));
+  traitdata.SSj  = (double**) malloc(traitdata.ntrait * sizeof(double*));
 
   for (i=0; i<traitdata.ntrait; i++){
     /* initialize then calculate species-specific sums and sample sizes */
@@ -1710,13 +1864,13 @@ int StandardizeTraitData(FILE*fout)
 	traitdata.SSj[i][traitdata.indSpeciesMap[j]] += mydiff * mydiff;
       }
     }
-    printf("SSj values, trait %d:\n", i+1);
+    /*printf("SSj values, trait %d:\n", i+1);
     for (isp=0; isp<sptree.nspecies; isp++)
-      printf("\tspecies %d: %8.4f\n", isp+1, traitdata.SSj[i][isp]);
+    printf("\tspecies %d: %8.4f\n", isp+1, traitdata.SSj[i][isp]); */
   }
 
   /* print means & sds to screen and out file */
-  printf(      "Trait sample size, mean (across populations) and standard deviation from that mean: \n    ");
+  printf(      "\nTrait sample size, mean (across populations) and standard deviation from that mean: \n    ");
   fprintf(fout,"\nTrait sample size, mean (across populations) and standard deviation from that mean: \n    ");
   for(i=0; i<traitdata.ntrait; i++){
     printf(      " %8s", traitdata.traitName[i]);
@@ -1844,15 +1998,17 @@ void FreeMem(void)
       for(j=0;j<data.ns[locus]; j++)
          free(data.z[locus][j]);
    }
-   for (j=0; j<traitdata.ntrait; j++){
-     free(traitdata.traitName[j]);
-     free(traitdata.nij[j]);
-     free(traitdata.ybarj[j]);
-     free(traitdata.SSj[j]);
+   if(mcmc.usetraitdata){
+     for (j=0; j<traitdata.ntrait; j++){
+       free(traitdata.traitName[j]);
+       free(traitdata.nij[j]);
+       free(traitdata.ybarj[j]);
+       free(traitdata.SSj[j]);
+     }
+     free(traitdata.nij);
+     free(traitdata.ybarj);
+     free(traitdata.SSj);
    }
-   free(traitdata.nij);
-   free(traitdata.ybarj);
-   free(traitdata.SSj);
 }
 
 int UseLocus (int locus, int copytreeconP, int useData, int setSeqName)
@@ -2228,6 +2384,7 @@ double UpdateGB_InternalNode (double* lnL, double finetune)
    locus.  The lower bound tb[0] is determined by age of the two sons 
    and also the age of the species that is a common ancestor to both sons.  
    The upper bound tb[1] is the father node's age.
+   This move does not change the species tree so does not affect trait likelihood.
 */
    int  accepted=0, locus, i,inode, sons[2],pops[2], ninodes;
    int  ipopsource,ipoptarget, copytree;
@@ -2434,6 +2591,8 @@ double UpdateGB_SPR (double* lnL, double finetune)
        (nodes) in the gene tree, and identifies those outside subtree whose 
        father node is older than tb[0].  For each of such branches, we 
        record the youngest age at which the subtree can join.
+
+   This move does not change the species tree so does not affect trait likelihood.
 */
    int accepted=0,nproposal, nsource, ntarget,targets[NS*2-1],target, copytree;
    int locus, i,j, inode, species, ipop, ipopsource, ipoptarget, father, sib;
@@ -2442,7 +2601,7 @@ double UpdateGB_SPR (double* lnL, double finetune)
    double y,tb[2], t,tnew;
 
    if(debug==3) puts("\nUpdateGB_SPR ");
-   if(finetune<=0) error2("steplength = 0 in UpdateGB_InternalNode");
+   if(finetune<=0) error2("steplength = 0 in UpdateGB_SPR");
 
    for(i=0,nproposal=0; i<data.ngene; i++) 
       nproposal += (mcmc.moveinnode ? data.ns[i]*2-1 : data.ns[i]-1);
@@ -2670,13 +2829,14 @@ double UpdateTheta (double finetune, double space[])
 {
 /* This updates theta's one by one, using proportional expansion or shrinkage.
    Perhaps change to sliding window to avoid getting tracked at 0.
-   This step does not require calculation of the likelihood.
+   This step does not require calculation of the sequence likelihood
+   nor of the trait likelihood.
 */
    int i, ipop, locus, accepted=0, ntheta=0;
    double thetaold, thetanew, lnacceptance;
    double *lnpGBinew=space, a=data.theta_prior[0], b=data.theta_prior[1];
 
-   if(finetune<=0) error2("steplength = 0 in UpdateGB_InternalNode");
+   if(finetune<=0) error2("steplength = 0 in UpdateTheta");
    for(i=0; i<sptree.npop; i++) {
       /* prior and proposal ratios */
       ipop = sptree.pops[i];
@@ -2707,20 +2867,20 @@ double UpdateTheta (double finetune, double space[])
 }
 
 
-double UpdateTau (double *lnL, double finetune, double space[])
+double UpdateTau (double *lnL, double *loglikTd, double finetune, double space[])
 {
 /* This updates speciation times tau using the rubber-band algorithm.
    ntj[] are counts of nodes below and above tau (m and n in the paper).
 */
-   int k, is, inode, locus, accepted=0, ntau=0;
+   int k, is, inode, locus, accepted=0, ntau=0, traitv;
    int ntj[2], ntj_locus[2];
    double tauold, taunew, taub[2], t, taufactor[2];
-   double lnacceptance=0, lnLd;
+   double lnacceptance=0, lnLd, lnTd=0.0;
    double *lnpGBinew=space, *lnpDinew=space+data.ngene;
    double a=data.tau_prior[0], b=data.tau_prior[1];
 
    if(debug==5) puts("\nUpdateTau ");
-   if(finetune<=0) error2("steplength = 0 in UpdateTimes");
+   if(finetune<=0) error2("steplength = 0 in UpdateTau");
    for(is=sptree.nspecies; is<sptree.nnode; is++)
       if(sptree.nodes[is].age > 0) ntau++;
 
@@ -2788,9 +2948,17 @@ double UpdateTau (double *lnL, double finetune, double space[])
       }
       lnacceptance += lnLd + ntj[0]*log(taufactor[0]) + ntj[1]*log(taufactor[1]);
 
+      /* likelihood ratio for trait data */
+      if(mcmc.usetraitdata)
+	for (traitv=0, lnTd=0.0; traitv<traitdata.ntrait; traitv++){
+	  traitmodel.proposedLoglik[traitv] = partialLoglikTraitData(traitv);
+	  lnTd += traitmodel.proposedLoglik[traitv] - traitmodel.loglik[traitv];
+	}
+      lnacceptance += lnTd;
+
       if(debug==5) {
          printf(" ntj: %d %d", ntj[0],ntj[1]);
-         printf(" lnLd %9.5f ", lnLd);
+         printf(" lnLd=%9.5f lnTd=%9.5f", lnLd, lnTd);
          for(k=com.ns; k<com.ns*2-1; k++)  printf("%d",com.oldconP[k]);
       }
 
@@ -2810,7 +2978,11 @@ double UpdateTau (double *lnL, double finetune, double space[])
                }
             }
          }
+	 if(mcmc.usetraitdata)
+	   for (traitv=0; traitv<traitdata.ntrait; traitv++)
+	     traitmodel.loglik[traitv] = traitmodel.proposedLoglik[traitv];
          *lnL += lnLd;
+         *loglikTd += lnTd;
          if(mcmc.usedata) SwitchconPin();
          if(debug==5) printf(" Y (%4d)\n", NPMat);
       }
@@ -2927,7 +3099,7 @@ int CountLHistories2 (void)
 
 #define lnPDFgamma(x, a, b)  ( (a)*log(b) - LnGamma(a) + ((a)-1)*log(x) - (b)*(x) )
 
-double UpdateSplitSpecies (double *lnL, double space[], double PrSplit)
+double UpdateSplitSpecies (double *lnL, double *loglikTd, double space[], double PrSplit)
 {
 /* This is a rjMCMC move that splits a node in the guide species tree.  A node 
    is feasible if it is joined but its mother node is not joined.
@@ -2938,14 +3110,15 @@ double UpdateSplitSpecies (double *lnL, double space[], double PrSplit)
    number of internal nodes (ninodes).
 */
    int nfeasible[2]={0}, feasibles[NSPECIES]={0}, locus, is, i,j, *sons,accepted=0;
-   int i1,i2, ninodes, ns, ntau, nLHnew=1, ithetajk[2]={0};
+   int i1,i2, ninodes, ns, ntau, traitv, nLHnew=1, ithetajk[2]={0};
    /* make sure e is the same in the split and join moves */
    double atheta=data.theta_prior[0], btheta=data.theta_prior[1];
    double atau=data.tau_prior[0], btau=data.tau_prior[1];
-   double lnacceptance = log((1-PrSplit)/PrSplit), tnew, tU=1e300, *lnpGBinew=space, lnGd;
+   double lnacceptance = log((1-PrSplit)/PrSplit), tnew, tU=1e300, *lnpGBinew=space, lnGd,lnTd=0.0;
    double thetafactor=1, y, thetai, aRJ=mcmc.RJfinetune[0], mRJ=mcmc.RJfinetune[1];
    char *ipop0=(char*)(lnpGBinew+data.ngene), *ip, ipopchanged=0;  /* old ipop */
    char *flags, *f;
+   int ItreeOld;
 
    if(debug==6) {
       printf("\nUpdateSplitSpecies\nSpecies tree\n");
@@ -2966,6 +3139,7 @@ double UpdateSplitSpecies (double *lnL, double space[], double PrSplit)
    }
    if(nfeasible[0]==0)
       return(0);
+   if(debug==12) puts("\nUpdateSplitSpecies : feasible");
 
    /* split species is, generate theta_j & theta_k, if they can exist, and 
       calculate their prior.
@@ -2987,6 +3161,8 @@ double UpdateSplitSpecies (double *lnL, double space[], double PrSplit)
    }
 
    sptree.nodes[is].age = tnew = tU*pow(rndu(), 1/3.0);
+   ItreeOld = sptree.Itree;
+   sptree.Itree |= 1<<(sptree.nspecies*2 - 2 - is);
    /* new theta_j & theta_k */
    thetai = sptree.nodes[is].theta;
    for(j=0; j<2; j++) 
@@ -3055,9 +3231,19 @@ double UpdateSplitSpecies (double *lnL, double space[], double PrSplit)
       lnGd += lnpGBinew[locus] - data.lnpGBi[locus];
    }
    lnacceptance += lnGd;
+   /* likelihood ratio for trait data */
+   if(mcmc.usetraitdata)
+     for (traitv=0, lnTd=0.0; traitv<traitdata.ntrait; traitv++){
+       traitmodel.proposedLoglik[traitv] = partialLoglikTraitData(traitv);
+       lnTd += traitmodel.proposedLoglik[traitv] - traitmodel.loglik[traitv];
+       if(debug==12) printf("\told (1 sp.) loglik : %.6f, new (2 sp.) loglik: %.6f\n",
+			    traitmodel.loglik[traitv], traitmodel.proposedLoglik[traitv]); //fixit
+     }
+   lnacceptance += lnTd;
 
    if(debug==6)
-      printf("tnew = %.6f lnacceptance = %.6f\n", tnew, lnacceptance);
+      printf("tnew = %.6f lnTd = %.6f, lnacceptance = %.6f\n", tnew,lnTd,lnacceptance);
+   if(debug==12) printf("\tlnTd = %.6f, lnacceptance = %.6f\n", lnTd,lnacceptance); //fixit
 
    if(diagnosis) {
       int i;
@@ -3072,6 +3258,7 @@ double UpdateSplitSpecies (double *lnL, double space[], double PrSplit)
             UseLocus (locus, 0, 0, 0);
             lnGd += lnpGB_ThetaTau(locus) - data.lnpGBi[locus];
          }
+	 /* this routine (if diagnosis) ignores trait data */
          if(lnGd>bestlnGd) { bestm=m; bestlnGd=lnGd; }
       }
       sptree.nodes[sons[0]].theta = thetajk[0];
@@ -3086,7 +3273,10 @@ double UpdateSplitSpecies (double *lnL, double space[], double PrSplit)
       for(locus=0; locus<data.ngene; locus++) {
          data.lnpGBi[locus] = lnpGBinew[locus];
       }
-      sptree.Itree |= 1<<(sptree.nspecies*2 - 2 - is);
+      if(mcmc.usetraitdata)
+	for (traitv=0; traitv<traitdata.ntrait; traitv++)
+	  traitmodel.loglik[traitv] = traitmodel.proposedLoglik[traitv];
+      *loglikTd += lnTd;
       com.np += 1 + (sptree.nodes[sons[0]].theta>0) + (sptree.nodes[sons[1]].theta>0);
       sptree.nLHistories = nLHnew;
       accepted = 1;
@@ -3095,6 +3285,7 @@ double UpdateSplitSpecies (double *lnL, double space[], double PrSplit)
       sptree.nodes[is].age = 0;
       sptree.nodes[sons[0]].theta = -1;
       sptree.nodes[sons[1]].theta = -1;
+      sptree.Itree = ItreeOld;
 
       if(ipopchanged)
          for(locus=0,ip=ipop0; locus<data.ngene; ip+=ns-1,locus++) {
@@ -3107,23 +3298,24 @@ double UpdateSplitSpecies (double *lnL, double space[], double PrSplit)
 }
 
 
-double UpdateJoinSpecies (double *lnL, double space[], double PrSplit)
+double UpdateJoinSpecies (double *lnL, double *loglikTd, double space[], double PrSplit)
 {
 /* This is a rjMCMC move that joins a node in the guide species tree.  A node 
    is feasible for joining if its two daughter nodes are tips or collapsed nodes.
-   This move does not change the likelihood.
+   This move does not change the sequence likelihood.
    See notes in UpdateSplitSpecies().
 */
    int nfeasible[2]={0}, feasibles[NSPECIES]={0}, locus, is, i, *sons,accepted=0;
-   int ninodes, ns, ntau, nLHnew=1;
+   int ninodes, ns, ntau, nLHnew=1, traitv;
    /* make sure e is the same in the split and join moves */
    double atheta=data.theta_prior[0], btheta=data.theta_prior[1];
    double atau=data.tau_prior[0], btau=data.tau_prior[1];
-   double lnacceptance = log(PrSplit/(1-PrSplit)), y;
+   double lnacceptance = log(PrSplit/(1-PrSplit)), y, lnTd=0.0;
    double told, tU=1e300, *lnpGBinew=space;
    double thetafactor=1, thetai, thetajk0[2], aRJ=mcmc.RJfinetune[0], mRJ=mcmc.RJfinetune[1];
    char *ipop0=(char*)(lnpGBinew+data.ngene), *ip, ipopchanged=0;  /* old ipop */
    char *flags, *f;
+   int ItreeOld;
 
    if(debug==7) puts("\nUpdateJoinSpecies ");
    for(i=0,ninodes=0; i<data.ngene; i++) 
@@ -3142,6 +3334,7 @@ double UpdateJoinSpecies (double *lnL, double space[], double PrSplit)
          feasibles[nfeasible[0] ++] = i;
    }
    if(nfeasible[0]==0) return(0);
+   if(debug==12) puts("\nUpdateJoinSpecies : feasible");
 
    /* join species is */
    is = feasibles[(int)(nfeasible[0]*rndu())];
@@ -3167,6 +3360,9 @@ double UpdateJoinSpecies (double *lnL, double space[], double PrSplit)
    /* tau_i */
    told = sptree.nodes[is].age;
    sptree.nodes[is].age = 0;
+   ItreeOld = sptree.Itree;
+   sptree.Itree &= ~(1<<(sptree.nspecies*2 - 2 - is));
+   // Itree needs to be the proposed Itree for trait likelihood if is=root
    /* theta_j & theta_k */
    thetai = sptree.nodes[is].theta;
    for(i=0; i<2; i++) {
@@ -3204,6 +3400,14 @@ double UpdateJoinSpecies (double *lnL, double space[], double PrSplit)
       lnpGBinew[locus] = lnpGB_ThetaTau(locus);
       lnacceptance += lnpGBinew[locus] - data.lnpGBi[locus];
    }
+   /* likelihood ratio for trait data */
+   if(mcmc.usetraitdata)
+     for (traitv=0, lnTd=0.0; traitv<traitdata.ntrait; traitv++){
+       traitmodel.proposedLoglik[traitv] = partialLoglikTraitData(traitv);
+       lnTd += traitmodel.proposedLoglik[traitv] - traitmodel.loglik[traitv];
+     }
+   if(debug==7 && mcmc.usetraitdata) printf("UpdateJoin: lnTd= %.6f\n", lnTd);
+   lnacceptance += lnTd;
 
    /* count nfeasible for splitting at target.  A node is feasible if its father 
       is already split.  This is calculated after the species to join (is) is known.  
@@ -3217,17 +3421,24 @@ double UpdateJoinSpecies (double *lnL, double space[], double PrSplit)
    y = tU*tU*tU/(3*told*told);
    lnacceptance += log(nfeasible[0]/(nfeasible[1]*y) * thetafactor);
 
+   if(debug==12) printf("\tlnTd = %.6f, lnacceptance = %.6f\n", lnTd,lnacceptance);
+
    if(lnacceptance>=0 || rndu()<exp(lnacceptance)) { /* accept */
       for(locus=0; locus<data.ngene; locus++) {
          data.lnpGBi[locus] = lnpGBinew[locus];
       }
-      sptree.Itree &= ~(1<<(sptree.nspecies*2 - 2 - is));
+      if(mcmc.usetraitdata)
+	for (traitv=0; traitv<traitdata.ntrait; traitv++)
+	  traitmodel.loglik[traitv] = traitmodel.proposedLoglik[traitv];
+      *loglikTd += lnTd;
+
       com.np -= 1 + (thetajk0[0]>0) + (thetajk0[1]>0);
       sptree.nLHistories = nLHnew;
       accepted = 1;
    }
    else  {
       sptree.nodes[is].age = told;
+      sptree.Itree = ItreeOld;
       for(i=0; i<2; i++)
          sptree.nodes[sons[i]].theta = thetajk0[i];
       if(ipopchanged)
@@ -3244,6 +3455,7 @@ double mixing (double* lnL, double finetune, double space[])
 /* This multiplies all theta, tau, and branch lengths in all gene trees by c.
    This move can bring a node age in a gene tree to be older than OldAge, 
    which may not be nice.
+   Does not affect the trait likelihood.
 */
    int accepted=0, locus, i, k, ntheta=sptree.npop, ntau=sptree.nspecies-1;
    double xold,xnew, *lnpDinew=space, *lnpGBinew=lnpDinew+data.ngene;
@@ -3323,6 +3535,7 @@ double UpdateLocusrateHeredity (double* lnL, double finetune)
    There is probably no need to update both when both are estimated for the 
    same locus, as the posterior for rates and heredity multipliers should be 
    quite flat.
+   Does not affect trait likelihood.
 */
    int  accepted=0, locus, j, locusref=0;
    double lnacceptance, lnLd, lnpDinew, lnpGBinew;
@@ -3398,6 +3611,7 @@ double UpdateLocusrateHeredity (double* lnL, double finetune)
 double UpdateSequenceErrors (double* lnL, double finetune, double space[])
 {
 /* This updates the parameters for sequencing errors
+   Does not affect trait likelihood.
 */
    int  accepted=0, locus, is, i, j;
    double lnacceptance, lnLd, *lnpDinew=space, eold, enew, eDold, eDnew, c, lnc, *a;
@@ -3604,14 +3818,11 @@ int GetInitials (void)
    }
 
    /* traits: heredity hsq = proportion of variance between species */
-   if (traitdata.ntrait){
+   if(traitdata.ntrait){ /* want them even if not usetraitdata */
      traitmodel.hsq     = (double*) malloc(traitdata.ntrait * sizeof(double));
      traitmodel.log1mhsq= (double*) malloc(traitdata.ntrait * sizeof(double));
-     for (i=0; i<traitdata.ntrait; i++){
-       traitmodel.hsq[i]  = 0.9; //0.5+0.5*rndu();
-       // fixed: 0.9 used to check PIC correctness.
-       traitmodel.log1mhsq[i]= log(1-traitmodel.hsq[i]);
-     }
+     for (i=0; i<traitdata.ntrait; i++)
+       setTraitHsq(i,0.5+0.5*rndu()); /* initial hsq values uniform in (0.5, 1) */
    }
 
    np = ntheta + ntau + data.nseqerr*16
@@ -3685,6 +3896,7 @@ int collectx (FILE* fout, double x[])
       com.np = k;
    }
    if(fout && mcmc.usedata) fprintf(fout, "\tlnL");
+   if(fout && mcmc.usetraitdata) fprintf(fout, "\tlogLik_traits");
    if(fout) fprintf(fout, "\n");
    return(0);
 }
@@ -3724,16 +3936,20 @@ void copySptree (void)
 int MCMC (FILE* fout)
 {
    FILE *fmcmc=gfopen(com.mcmcf,"w"), *fmcmctmp;
-   int nsteps = 5+(data.nseqerr>0);
-   char BtreeStr[NSPECIES], line[16000], *mcmctmp="mcmc.tmp";
+   int nsteps = 8; /* was there a bug before? was 5+(data.nseqerr>0) instead of 6+(data.nseqerr>0) */
+   char BtreeStr[NSPECIES], line[16000];
    int locus, j,k, ir, Btree=0, bit, lline=16000;
    double pBtree=0;
-   double *x, *mx, *freqtree, lnL, lnLtrait, PrSplit=0.5, postnodes[NSPECIES-1]={0};
-   double Pmodel=0, Pjump[7]={0}, nround=0;
+   double *x, *mx, *freqtree, lnL, lnLtrait=0.0, PrSplit=0.5, postnodes[NSPECIES-1]={0};
+   double Pmodel=0, Pjump[8]={0}, nround=0, nroundHsq=0;
    double PtauThreshold[NSPECIES][2]={{0}}, tauThreshold[2]={2E-5, 2E-4};
    int traitv;
 
    noisy=3;
+
+   // used to be: *mcmctmp = "mcmc.tmp". Changed by Cecile 11/2011
+   char * mcmctmp = (char*) malloc((strlen(com.mcmcf) + 5)* sizeof(char));
+   sprintf(mcmctmp, "%s.tmp", com.mcmcf);
 
    if(sptree.speciesdelimitation) {
       k = (1<<(sptree.nspecies-1));
@@ -3745,11 +3961,16 @@ int MCMC (FILE* fout)
    mcmc.saveconP = 1;
    if(!mcmc.usedata) mcmc.saveconP = 0;
 
-   printf("\n%d burnin, sampled every %d, %d samples\n", 
+   printf("\n%d generations for burnin, sampling every %d generations, collecting %d samples\n", 
            mcmc.burnin, mcmc.sampfreq, mcmc.nsample);
-   if(mcmc.usedata) puts("Approximating posterior, using sequence data");
-   else             puts("Approximating prior, not using sequence data");
-
+   if (mcmc.usetraitdata){
+     if(mcmc.usedata) puts("Approximating posterior, using sequence and trait data");
+     else             puts("Approximating posterior, using trait data only");
+   }
+   else {
+     if(mcmc.usedata) puts("Approximating posterior, using sequence data");
+     else             puts("Approximating prior, not using sequence (nor trait) data");
+   }
    printf("(Settings: cleandata=%d print=%d saveconP=%d moveinnode=%d)\n",
           com.cleandata, mcmc.print, mcmc.saveconP, mcmc.moveinnode);
 
@@ -3780,9 +4001,10 @@ int MCMC (FILE* fout)
       data.lnpGBi[locus] = lnpGB_ThetaTau(locus);
    }
    /* initialize likelihood of trait data for each trait variable */
-   if (traitdata.ntrait){
+   if (mcmc.usetraitdata && traitdata.ntrait){
      traitmodel.loglik  = (double*) malloc(traitdata.ntrait * sizeof(double));
-     lnLtrait = completeLoglikTraitData_all();
+     traitmodel.proposedLoglik = (double*) malloc(traitdata.ntrait * sizeof(double));
+     completeLoglikTraitData_all(NULL, &lnLtrait); /* initializes lnLtrait */
    }
 
    collectx(fmcmc, x);
@@ -3790,8 +4012,10 @@ int MCMC (FILE* fout)
    printf("\nInitial parameters, np = %d (gene trees generated from the prior):\n", com.np);
    for(j=0; j<com.np; j++) printf("%9.5f",x[j]);
    for(j=0; j<data.maxns*2-1; j++) com.oldconP[j]=0;
-   lnL = lnpData(data.lnpDi) + lnLtrait;
+   lnL = lnpData(data.lnpDi); /* loglik of sequence data only. Excludes loglik 
+				 (i.e. prior) of gene trees and of trait data */
    printf("\nlnL0 =%12.3f\n", lnL);
+   if (mcmc.usetraitdata) printTraitLikelihoods(stdout,lnLtrait);
 
    for(ir=-mcmc.burnin,nround=0; ir<mcmc.sampfreq*mcmc.nsample; ir++) {
       if(ir==0 || (mcmc.resetFinetune && nround>=100 && mcmc.burnin>=200
@@ -3799,38 +4023,50 @@ int MCMC (FILE* fout)
          /* reset finetune parameters.  Do this twice. */
          if(mcmc.resetFinetune && mcmc.burnin>=200) {
             ResetFinetuneSteps(fout, Pjump, mcmc.finetune, nsteps);
+	    if(mcmc.finetune[7]>.2){
+	      printf("Resetting average step size of h2 to 0.2 (not %.3f), because h2 stays in (0,1).\n\n",
+		     mcmc.finetune[7]);
+	      mcmc.finetune[7]=0.2;
+	    }
          }
-         nround=0;  Pmodel=0;
+         nround=0;  Pmodel=0; nroundHsq=0;
          zero(Pjump, nsteps);
          zero(mx, com.np); 
-	 // fixit: use window size tuning parameter for hsq updates and finetune it here.
       }
-      nround++;
+      nround++; /* nround = # generations after burnin or after last reset */
 
       if(sptree.speciesdelimitation) {
-	// fixit: for each move, build likelihood ratio of trait data into acceptance prob.
+	//debug=12; //fixit, and last line of block
          if(rndu()<PrSplit)
-            Pmodel  += UpdateSplitSpecies(&lnL, com.space, PrSplit);
+            Pmodel  += UpdateSplitSpecies(&lnL, &lnLtrait, com.space, PrSplit);
          else
-            Pmodel  += UpdateJoinSpecies(&lnL, com.space, PrSplit);
+            Pmodel  += UpdateJoinSpecies(&lnL, &lnLtrait, com.space, PrSplit);
+	 //debug=10;
       }
 
+      /* Pjump = acceptance rate of each proposal, calculated on the fly */
       Pjump[0]  = (Pjump[0]*(nround-1) + UpdateGB_InternalNode(&lnL, mcmc.finetune[0]))/nround;
       Pjump[1]  = (Pjump[1]*(nround-1) + UpdateGB_SPR(&lnL, mcmc.finetune[1]))/nround;
       Pjump[2]  = (Pjump[2]*(nround-1) + UpdateTheta(mcmc.finetune[2], com.space))/nround;
       if(sptree.nspecies>1 && sptree.nodes[sptree.root].age>0)
-         Pjump[3]  = (Pjump[3]*(nround-1) + UpdateTau(&lnL, mcmc.finetune[3], com.space))/nround;
-      
+         Pjump[3]  = (Pjump[3]*(nround-1) + UpdateTau(&lnL, &lnLtrait, mcmc.finetune[3], com.space))/nround;
       Pjump[4]  = (Pjump[4]*(nround-1) + mixing(&lnL, mcmc.finetune[4], com.space))/nround;
       Pjump[5]  = (Pjump[5]*(nround-1) + UpdateLocusrateHeredity (&lnL, mcmc.finetune[5]))/nround;
       if(data.nseqerr)
          Pjump[6]  = (Pjump[6]*(nround-1) + UpdateSequenceErrors (&lnL, mcmc.finetune[6], com.space))/nround;
-
+      if (traitdata.ntrait) //fixithere
+	if (sptree.Itree) {  /* update hsq only if more than 1 species */ 
+	  //debug=10; //fixit
+	  nroundHsq++; // number of attempted updates of hsq
+	  //printf("Updating Hsq values, >1 species. nroundHsq=%3f, acceptance rate=%3f prior to proposal.\n",nroundHsq,Pjump[7]);
+	  Pjump[7]  = (Pjump[7]*(nroundHsq-1) + UpdateTraitHsq(&lnLtrait, mcmc.finetune[7]))/nroundHsq;
+	  //debug=12; fixit
+	} //else printf("1 species: NOT updating Hsq values.\n");
       checkGtree();
 
       collectx(NULL, x);
       for(j=0; j<(sptree.speciesdelimitation ? 1 : com.np); j++) 
-         mx[j] = (mx[j]*(nround-1) + x[j])/nround;
+         mx[j] = (mx[j]*(nround-1) + x[j])/nround; /* posterior mean, on the fly*/
       if(ir>=0) {
          if(sptree.speciesdelimitation)
             freqtree[sptree.Itree]++;
@@ -3847,32 +4083,40 @@ int MCMC (FILE* fout)
             fprintf(fmcmc, "\t%d\t %s ", com.np, printSpItree(sptree.Itree));
          for(j=0;j<com.np; j++)    fprintf(fmcmc,"\t%.6f", x[j]);
          if(mcmc.usedata) fprintf(fmcmc, "\t%.3f", lnL);
+         if(mcmc.usetraitdata) fprintf(fmcmc, "\t%.3f", lnLtrait);
          fprintf(fmcmc, "\n");
       }
-      if(/* noisy && */ (ir+1)%max2(mcmc.sampfreq, mcmc.sampfreq*mcmc.nsample/1000)==0) {
-         printf("\r%3.0f%%", (ir+1.)/(mcmc.nsample*mcmc.sampfreq)*100.);
-         for(j=0; j<nsteps; j++) 
+      //if(/* noisy && */ (ir+1)%max2(mcmc.sampfreq, mcmc.sampfreq*mcmc.nsample/1000)==0) {
+      if(mcmc.sampfreq*mcmc.nsample>=50 && (ir+1)%(mcmc.sampfreq*mcmc.nsample/20)==0) {
+         printf("%3.0f%%", (ir+1.)/(mcmc.nsample*mcmc.sampfreq)*100.);
+         for(j=0; j<nsteps; j++){
+            if (j==5 && !data.est_heredity)  continue;
+            if (j==6 && !data.nseqerr)       continue;
+            if (j==7 && traitdata.ntrait==0) continue;
             printf(" %4.2f", Pjump[j]); 
+	 }
          printf(" ");
 
          if(sptree.speciesdelimitation)
             printf(" %2d %6.4f %s ", com.np, Pmodel/nround, printSpItree(sptree.Itree));
          for(j=0; j<(sptree.speciesdelimitation ? 1 : min2(com.np,8)); j++) {
             printf(" %7.5f", mx[j]);
-			   if(j>0 && j==sptree.npop-1) printf(" ");
+	    if(j>0 && j==sptree.npop-1) printf(" ");
          }
 
          if(mcmc.usedata) printf(" %4.2f", lnL);
+         if(mcmc.usetraitdata) printf(" %4.2f", lnLtrait);
 
-         if(mcmc.sampfreq*mcmc.nsample>=50 && (ir+1)%(mcmc.sampfreq*mcmc.nsample/20)==0) {
+         //if(mcmc.sampfreq*mcmc.nsample>=50 && (ir+1)%(mcmc.sampfreq*mcmc.nsample/20)==0) {
             printf(" %s\n", printtime(timestr));
             testlnL=1;
             if(fabs(lnL - lnpData(data.lnpDi)) > 0.01) {
                printf("lnL not right: %12.6f != %12.6f ", lnL, lnpData(data.lnpDi));
             }
+            completeLoglikTraitData_all(NULL, &lnLtrait); /* produce warning if lnLtrait doesn't match */
             testlnL=0;
             if(mcmc.print) fflush(fmcmc);
-         }
+	    //}
 
          if(diagnosis) getchar();
       }
@@ -3882,8 +4126,11 @@ int MCMC (FILE* fout)
    free(data.lnpGBi);
    free(data.lnpDi);
    free(data.Imap);
-   if (traitdata.ntrait){
+   if (mcmc.usetraitdata && traitdata.ntrait){
      free(traitmodel.loglik);
+     free(traitmodel.proposedLoglik);
+   }
+   if (traitdata.ntrait){
      free(traitmodel.hsq);
      free(traitmodel.log1mhsq);
    }
@@ -3950,6 +4197,8 @@ int MCMC (FILE* fout)
       if(mcmc.print) {
          printf("\nSummarizing parameters for the MAP tree %s\n", printSpItree(Btree));
          fprintf(fout, "\nSummarizing the posterior of parameters under the MAP tree %s\n", printSpItree(Btree));
+	 if (sptree.Itree == 0)
+	   fprintf(fout, "Note that heredity parameters (h2) are irrelevant under a unique population model\n");
          fmcmctmp = gfopen(mcmctmp, "w");
          com.np = -1;  /* com.np is for the last tree not the MAP tree.  Reset in collectx(). */
          for(j=0,bit=sptree.nspecies-2; j<sptree.nspecies-1; j++,bit--)
@@ -3968,49 +4217,61 @@ int MCMC (FILE* fout)
          }
          fclose(fmcmc);
          fclose(fmcmctmp);
-         DescriptiveStatisticsSimple(fout, mcmctmp, 50, 100, 3);
+         DescriptiveStatisticsSimple(fout, mcmctmp, 50, 100, 3); // fixit: would be good to have diagnostic about top.
+	 printf("\n");
       }
    }
    return(0);
 }
 
-double completeLoglikTraitData_all()
+void completeLoglikTraitData_all(FILE * fout, double * logLikTrait)
 { /* log likelihood of all trait data given species tree and hsq values.
      Also fills in traitmodel.loglik with PARTIAL loglik values */
    int traitv;
-   double lnL=0, y;
-   for (traitv=0; traitv<traitdata.ntrait; traitv++)
-     lnL += completeLoglikTraitData(traitv);
-   return(lnL);
+   double lnL=0.0, y;
+   if (mcmc.usetraitdata)
+     for (traitv=0; traitv<traitdata.ntrait; traitv++)
+       lnL += completeLoglikTraitData(traitv,fout);
+   if (testlnL && fabs( *logLikTrait - lnL )>0.01){
+     printf("Trait loglik not correct: had %8.4f, should be %8.4f\n",*logLikTrait,lnL);
+     fflush(stdout);
+   }
+   *logLikTrait = lnL;
 }
 
 double partialLoglikTraitData_all()
-{ 
+{
   int traitv;
-  double lnL=0;
-  for (traitv=0; traitv<traitdata.ntrait; traitv++)
-    lnL += partialLoglikTraitData(traitv);
+  double lnL=0.0;
+  if (mcmc.usetraitdata)
+    for (traitv=0; traitv<traitdata.ntrait; traitv++)
+      lnL += partialLoglikTraitData(traitv);
   return (lnL);
 }
 
-double completeLoglikTraitData(int traitIndex)
-{ /* returns complete loglik value but also fills 
-     fills in traitmodel.loglik with PARTIAL loglik values */
-  double logp, nu0mult, kratio;
+double completeLoglikTraitData(int traitIndex,FILE * fout)
+{ /* returns complete loglik value but also fills in traitmodel.loglik
+     with PARTIAL loglik values. Not checking usetraitdata */
+  double logp, nu0mult=0.0, kratio;
   int n = traitdata.ni[traitIndex];
 
   /* partial loglik */
   logp = partialLoglikTraitData(traitIndex);
+  if (testlnL && fabs(logp-traitmodel.loglik[traitIndex])>0.01)
+    printf("Trait loglik not correct: had %8.4f, should be %8.4f\n",traitmodel.loglik[traitIndex],logp);
   traitmodel.loglik[traitIndex] = logp;
-  printf("trait %d, partial loglik=%8.4f\n",traitIndex+1,logp);
+  if (fout) printf("trait %d, partial loglik=%8.4f, ",traitIndex+1,logp);
+    
+  if (traitmodel.nu0==0.0 || traitmodel.kappa0==0.0)
+    return logp;
 
-  /* now completing */
-  kratio = traitmodel.kappa0 / (double)(traitmodel.kappa0 + n);
-  nu0mult = getNu0multiplier(traitmodel.nu0, n);
+  /* now completing, only if both nu0 and kappa>0. */
+  kratio = traitmodel.kappa0 / (traitmodel.kappa0 + n);
+  nu0mult = getNu0multiplier(traitmodel.nu0, n); // Warning: result valid only if nu0>0 integer
   logp += - log(Pi)*n/2 + log(kratio)/2 + nu0mult
           + log(traitmodel.priorSS)*traitmodel.nu0 /2;
   /* Pi defined in paml.h */
-  printf("trait %d, complete loglik=%8.4f\n",traitIndex+1,logp);
+  if (fout) printf("complete loglik=%8.4f\n",traitIndex+1,logp);
   return(logp);
 }
 
@@ -4022,18 +4283,37 @@ double partialLoglikTraitData (int traitIndex)
   struct INDEPENDENTCONTRAST tempIC;
 
   n = traitdata.ni[traitIndex];
-  kratio = traitmodel.kappa0 / (double)(traitmodel.kappa0 + n);
+  kratio = traitmodel.kappa0 / (traitmodel.kappa0 + n);
   updatePIC(sptree.nspecies, traitIndex, &tempIC);
-  //printPIC(&tempIC,stdout);
   bias = tempIC.ancestralState-traitmodel.mu0;
   postSS  = traitmodel.priorSS + tempIC.contrastSS + tempIC.oneVmone *kratio*bias*bias;
   lnL  = - tempIC.logDetV/2 - log(postSS)*(traitmodel.nu0 + n)/2;
+  if (debug==12){
+    printf("\n\thsq            : %8.4g\n",traitmodel.hsq[traitIndex]);
+    printPIC(&tempIC,stdout);
+    printf("\tlog(prior SS)  : %8.4g\n",log(traitmodel.priorSS));
+    printf("\tlog(posteriorSS):%8.4g\n",log(postSS));
+    printf("\tpartial loglik : %8.4g\n",lnL);
+  }
   return(lnL);
 }
 
-double  getNu0multiplier(int nu0, int n)
+void printTraitLikelihoods(FILE * fout, double lnLtrait)
+{
+  int i;
+  if (traitmodel.nu0 == 0.0 || traitmodel.kappa0 == 0.0)
+    fprintf(fout, "Trait partial log-likelihood: %8.4f\n", lnLtrait);
+  else
+    fprintf(fout, "Marginal Trait log-likelihood, complete: %8.4f\n", lnLtrait);
+  if(mcmc.usetraitdata)
+    for (i=0; i<traitdata.ntrait; i++)
+      fprintf(fout, "\tPartial loglik, trait %d: %8.4f\n",i+1,traitmodel.loglik[i]);
+}
+
+double  getNu0multiplier(double nu0, int n)
 { /* returns the log of Gamma((nu0+n)/2) / Gamma(nu0/2). 
-     valid arguments are nu0>0 and n>=0. Return 0 if either condition is not met. */
+     valid arguments are nu0>0 and n>=0. Return 0 if either condition is not met.
+     Warning: result is incorrect (approx only) if nu0=0 or not integer. */
   double val=0.0;
   while (n>1){
     val += log( (nu0+n)/2.0 -1.0 );
@@ -4044,8 +4324,9 @@ double  getNu0multiplier(int nu0, int n)
       val += log((double)(nu0-1)/(double)(nu0-2));
       nu0--; nu0--;
     }
-    if (nu0==1) val -= log(Pi)/2;
-    if (nu0==2) val += log(Pi)/2 -log(2);
+    if ( ((int)nu0) ==1) val -= log(Pi)/2;
+    if ( ((int)nu0) ==2) val += log(Pi)/2 -log(2);
+    // cases nu0 not an integer and nu0=0 not covered.
   }
   return(val);
 }
@@ -4067,24 +4348,34 @@ void  updatePIC(int inode, int traitIndex, struct INDEPENDENTCONTRAST * pic)
      Post-order tree traversal. */
   int k, nind;
   double t0, sum1Am1, w0, contrast;
-  if (inode == sptree.nspecies) // root
-    t0 = 0.0;
-  else
-    t0 = (sptree.nodes[sptree.nodes[inode].father].age - sptree.nodes[inode].age)
-              * traitmodel.hsq[traitIndex] / sptree.nodes[sptree.nspecies].age;
+  if (sptree.Itree == 0){ 
+    /* One single species: can't normalize by root age (=0) */
+    t0 = 0.0; /* if considering h2 to be 0  - fixit: make sure best approach*/ 
+    //if (inode == sptree.nspecies) t0 = traitmodel.hsq[traitIndex]; else t0 = 0.0; /* using hsq */
+  } else {
+    if (inode == sptree.nspecies) t0 = 0.0; /* root node */
+    else
+      t0 = (sptree.nodes[sptree.nodes[inode].father].age - sptree.nodes[inode].age)
+	* traitmodel.hsq[traitIndex] / sptree.nodes[sptree.nspecies].age;
+  }
 
   if (sptree.nodes[inode].nson==0){ // leaf
     nind = traitdata.nij[traitIndex][inode];
     if (nind==0)
       error2("assuming at least one individual per putative species in updatePIC");
 
-    pic->oneVmone = 1/(t0 + (1 - traitmodel.hsq[traitIndex]) / nind);
-    pic->logDetV = log(1 +  t0*nind/(1 - traitmodel.hsq[traitIndex]))
-                   + nind * traitmodel.log1mhsq[traitIndex];
-    pic->ancestralState = traitdata.ybarj[traitIndex][inode];
-    if (nind==1) pic->contrastSS = 0.0;
-    else
+    if (sptree.Itree == 0) { // using hsq=0, // fixithere: make sure this approach is best
+      pic->oneVmone = (double)nind;
+      pic->logDetV  = 0.0;
+      pic->contrastSS = traitdata.SSj[traitIndex][inode];
+    } else
+    {
+      pic->oneVmone = 1/(t0 + (1 - traitmodel.hsq[traitIndex]) / (double)nind);
+      pic->logDetV = log(1 - traitmodel.hsq[traitIndex] +  t0*nind)
+	             + (nind-1) * traitmodel.log1mhsq[traitIndex];
       pic->contrastSS = traitdata.SSj[traitIndex][inode] / (1 - traitmodel.hsq[traitIndex]);
+    }
+    pic->ancestralState = traitdata.ybarj[traitIndex][inode];
     return;
   } 
   else {
@@ -4104,8 +4395,59 @@ void  updatePIC(int inode, int traitIndex, struct INDEPENDENTCONTRAST * pic)
     pic->contrastSS = contrast*contrast/(1/pic0.oneVmone + 1/pic1.oneVmone)
                       + pic0.contrastSS + pic1.contrastSS;
   }
-  //printf("in update PIC node, trait %d, node %d:\n",traitIndex+1, inode+1);
-  //printPIC(pic,stdout);
+  /*printf("in update PIC node, trait %d, node %d:\n",traitIndex+1, inode+1);
+    printPIC(pic,stdout);*/
+}
+
+void setTraitHsq(int traitIndex, double hsq)
+{
+  traitmodel.hsq[traitIndex] = hsq;
+  traitmodel.log1mhsq[traitIndex] = log(1-hsq);
+}
+
+double UpdateTraitHsq (double* loglikT, double finetune)
+{
+  /* Updates hsq's one by one, using symmetric mixture of 2 normal distributions.
+     Does not change the sequence and gene tree likelihoods, only trait likelihood.
+  */
+   int traitv, accepted=0;
+   double hsqold, hsqnew, lnacceptance, lnTd=0.0;
+
+   if(debug==10)
+     printf("UpdateTraitHsq: stepsize=%8.4f\n", finetune);
+   if(finetune<=0) error2("steplength = 0 in UpdateTraitHsq");
+   for(traitv=0; traitv<traitdata.ntrait; traitv++) {
+     /* proposal ratios */
+     hsqold = traitmodel.hsq[traitv];
+     hsqnew = hsqold + finetune*rnd2NormalSym(m2NormalSym); /* m2NormalSym=0.95 defined in paml.h */
+     hsqnew = reflect(hsqnew, 0.0, 1.0 - 1e-20);
+     /* symmetric proposal, so proposal ratio = 1 even after reflection*/
+     setTraitHsq(traitv, hsqnew);
+
+     lnacceptance = 0.0; /* using uniform prior for hsq: prior ratio=1 */
+
+     /* likelihood ratio */
+     if(mcmc.usetraitdata){
+       traitmodel.proposedLoglik[traitv] = partialLoglikTraitData(traitv);
+       lnTd = traitmodel.proposedLoglik[traitv] - traitmodel.loglik[traitv];
+     }
+     lnacceptance += lnTd;
+     if(debug==10)
+       printf("\ttrait %d: oldHsq=%8.4f, newHsq=%8.4f, lnacceptance=%8.4f ",
+	      traitv+1,hsqold,hsqnew,lnacceptance); 
+
+     if(lnacceptance>=0 || rndu()<exp(lnacceptance)) {
+       if(mcmc.usetraitdata)
+	 traitmodel.loglik[traitv] = traitmodel.proposedLoglik[traitv];
+       *loglikT += lnTd;
+       accepted++;
+       if(debug==10) printf("accepted.");
+     }
+     else
+       setTraitHsq(traitv, hsqold);
+     if(debug==10) printf("\n");
+   }
+   return((double)accepted/traitdata.ntrait);
 }
 
 #endif
