@@ -1,0 +1,27 @@
+Indiv	[ these are comments!
+Population Rego	 SVL fdas
+* comments here!!
+1 A  36680 45 1
+2 A  39720 44 NA
+3 A  42347 44 NA what happens now?
+[ and comments here too.
+4 B 135127 48 NA
+5 C  25340 41 NA
+6 C  49257 40 NA
+7 D  57428 38 NA
+8 E  58527 34 NA
+9 E  NA    33 NA 
+
+
+//end of file
+
+The first column should give the individual IDs.
+At this point they do not need to be the same individual IDs
+as those in the sequence file. 
+The column name should be Individual or some abbreviation of it.
+
+The second column should give the assignment of individuals to species.
+Its name should be Population, Species, or Clade.
+
+Any other column should provide numerical values. 
+Column names should be provided and all be different.

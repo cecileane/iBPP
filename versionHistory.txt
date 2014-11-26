@@ -1,0 +1,129 @@
+Version 2.1.2, November 2014 --Cecile Ane
+
+Name changed to iBPP, to reflect integration of traits and genes.
+Analysis can use multiple traits. Model assumes Brownian motion
+         for the evolution of species means. Each trait has its
+         own phylogenetic signal parameter.
+Simulation can output trait data, under various models.
+
+
+Version 2.1, April 2011
+
+(a) I have changed the specification of the finetune variable to allow
+the program to use automatic adjustment.  The old option of using
+fixed step lengths is specified by
+
+      finetune = 0: .05 .001 .0003 .0005 .08 .25 0.0002  # finetune for GBtj, GBspr, theta, tau, mix, locusrate, seqerr
+
+while the new option of automatic steplength adjustment is specified
+by someething like the following.  The step lengths on the line are
+still used as initial values, but bpp will try to use the burn in to
+make adjustments.
+
+      finetune = 1: .01 .01 .01 .01 .01 .01 .01 .01  # finetune for GBtj, GBspr, theta, tau, mix, locusrate, seqerr
+
+Look at the document.
+
+(b) A bug that affects the posterior summary of parameters for the MAP
+tree is fixed.  With species delimitation, the different species
+models have different numbers of parameters.  At the end of the MCMC
+run, the program identifies the MAP tree, the species tree model with
+the maximum posterior probability, and then copies the samples of
+parameters for that model from the MCMC sample file into another
+temporary file mcmc.tmp, and summarizes the results for the MAP tree.
+I think this was added in version 2.0a or b.  A bug in the program
+(versions 2.0, 2.0a, 2.0b) caused the program to count the number of
+parameters incorrectly if the last species tree visited during the
+MCMC is not the MAP tree.  As a result, no summary is provided for the
+MAP tree or 0s are shown for the posterior means, CIs etc. for the MAP
+tree.  This bug is now fixed.  Thanks to Chih-Ming Hung for reporting
+the bug.
+
+In general, a better way of generating
+the posterior of parameters for the MAP tree is to turn off
+speciesdelimitation and use the MAP tree as the fixed species tree.
+This requires preparing new control and Imap files although there is
+no need to change the sequence alignment file.
+
+(c) Restored the option of specifying heredity multipliers (heredity
+= 2).  This option was in MCMCcoal but disabled when I changed the
+sequence data file format.  In this version the multipliers are
+specified in a file.  I have yet to do some testing of this option.
+
+
+
+
+Version 2.0b BP&P November 2010
+
+MCcoal.  The simulation algorithm for simulating data under a model of
+migration is found to have bugs.  These are now fixed.
+
+
+
+
+Version 2.0a BP&P August 2010
+
+The definition of the migration matrix in the control file MCcoal.ctl
+for the simulation program is now changed.  In version 2.0, Mij = mij/
+mu, where mij is the proportion of migrants in population j that are
+from population i and is the mutation rate per site per generation.
+This scaling by the mutation rate is not so intuitive biologically.
+From version 2.0a, Mij = Nj*mij, that is, the expected number of
+migrants in population j that are from population i.  This seems to be
+more intuitive.
+
+
+
+
+
+Version 2.0 BP&P, June 2010
+
+Implemented the algorithm of Yang & Rannala (2010) for species delimitation.  
+
+The priors on tau's and theta's are now slightly different from those
+used in MCMCcoal.  In bpp, all s in the model are assigned gamma
+priors with the same parameters, while in MCMCcoal one has to specify
+a gamma prior for each parameter, so the parameters can be different.
+In bpp, the root age in the species tree ( 0) is assigned a gamma
+prior, while the other node ages are generated from the Dirichlet
+distribution (Yang and Rannala, 2010: equation 2).  We suspect that
+those differences should not matter much in typical datasets.
+
+
+
+Version 1.2 MCMCcoal, July 2007
+
+Added two models of mutation rate variation among loci: one using
+fixed locus rates estimated externally, and another of random variable
+rates across loci (with a transformed Dirichlet prior).  See Burgess &
+Yang (2008).
+
+Added two options for locus-specific heredity multipliers (inheritance
+scalars).  The first is for the user to specify the multipliers in the
+sequence data file, which will be used in the likelihood calculation
+in the MCMC.  The second is to let the program estimate the
+multipliers, with a gamma prior.  Those options are not tested
+carefully, and the first option is now disabled due to the change of
+data format in BP&P2.0.
+
+The definition of species divergence times is changed.  In version 1.1
+and earlier, the divergence times may be defined as time gaps (say,
+HCGO - HCG, HCG - HC, and HC) or as ages of nodes in the species tree
+(say, HCGO, HCG, HC).  This definition affects the prior specification
+and the output.  In version 1.2, the parameters are always defined as
+node ages, in both prior specification and output.
+
+Added a model of random sequencing errors.  This assumes that some
+species have sequencing errors, with a constant per-nucleotide error
+rate applied to all sequences for that species.
+
+
+
+Version 1.1 MCMCcoal, April 2005
+
+
+Version 1.0 MCMCcoal, September 2002
+
+This program implements the MCMC coalescent model of Rannala & Yang (2003 Genetics 164:1645-1656).
+
+// end of file

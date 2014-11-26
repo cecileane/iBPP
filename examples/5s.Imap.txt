@@ -1,0 +1,21 @@
+1 A
+2 A
+3 A
+4 B
+5 C
+6 C
+7 D
+8 E
+
+//end of file
+
+individual  species
+   1           A
+   2           A
+  ...
+
+This file maps individual IDs (1, 2, ...) to "species" names on the species guide tree.  
+The individual IDs are specified at the end of each sequence in the sequence alignment 
+file.  The species names are used in the species tree specified in the control file 
+MCMCcoal.ctl.
+

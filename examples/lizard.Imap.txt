@@ -1,0 +1,30 @@
+1 tri
+2 tri
+3 tri
+4 tri
+5 cow
+6 cow
+7 cow
+8 con
+9 con
+10 con
+11 con
+12 und
+13 und
+14 und
+15 und
+16 und
+17 woo
+
+//end of file
+
+individual  species
+   1           A
+   2           A
+  ...
+
+This file maps individual IDs (1, 2, ...) to "species" names on the
+species guide tree.  The individual IDs are specified at the end of
+each sequence in the sequence alignment file.  The species names are
+used in the species tree specified in the control file bpp.ctl.
+
