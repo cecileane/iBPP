@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/7419/cecileane/iBPP.png)](http://dx.doi.org/10.5281/zenodo.12927)
+
 iBPP: integration of genes and traits for Bayesian Phylogenetics and Phylogeography
 -------
 
@@ -9,6 +11,5 @@ Bayesian species delimitation combining multiple genes and traits in a unified f
 Bayesian species delimitation using multilocus sequence data. 
 *PNAS* 107:9264–9269.
 
-[![DOI](https://zenodo.org/badge/7419/cecileane/iBPP.png)](http://dx.doi.org/10.5281/zenodo.12927)
 
-For a Windows executable and instructions, see [here](man/winexe.md).
+For a **Windows** executable and instructions, see [here](man/winexe.md).
