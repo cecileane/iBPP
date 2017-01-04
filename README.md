@@ -1,4 +1,4 @@
-[![DOI](https://zenodo.org/badge/7419/cecileane/iBPP.png)](http://dx.doi.org/10.5281/zenodo.12927)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.12927.svg)](https://doi.org/10.5281/zenodo.12927)
 
 iBPP: integration of genes and traits for Bayesian Phylogenetics and Phylogeography
 -------
@@ -13,3 +13,15 @@ Bayesian species delimitation using multilocus sequence data.
 
 
 For a **Windows** executable and instructions, see [here](man/winexe.md).
+
+To install and compile on Linux or Mac:
+
+- download and unzip the package, or clone it using git:  
+  `git clone https://github.com/cecileane/iBPP.git`
+- navigate to the source directory: `cd iBPP/src/`
+- compile with `gcc -o ibpp -O3 bpp.c tools.c -lm`
+- move the executable to a directory in your PATH, typically `~/bin/`,
+  to run iBPP from anywhere: `mv ibpp ~/bin/`
+- check that the executable runs on a very short example:
+  * navigate to the example folder: `cd ../examples/`
+  * then run ibpp: `ibpp 5s.analysis.ctl`

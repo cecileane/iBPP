@@ -1874,6 +1874,7 @@ int ReadTraitData(char *traitfile, FILE*fout)
      fscanf(ftrait, "%s", name);
      if (strchr(comment,name[0])){ // ignoring the rest of the line
        fgets(line, lline, ftrait); continue;}
+     // fixit: check for name of these first 2 columns
      i++;
    }
    for (i=0; i<traitdata.ntrait;){
@@ -2042,6 +2043,23 @@ int StandardizeTraitData(FILE*fout)
   }
   printf(      "\n"); fflush(stdout);
   fprintf(fout,"\n"); fflush(fout);
+
+  /* print number of missing data per trait per population */
+  printf("\nNumber of non-missing values");
+  //printf(" and population-specific sum-of-squares (after standardization)");
+  printf(":\nSp. ");
+  for(i=0; i<traitdata.ntrait; i++)
+    printf(" %4s", traitdata.traitName[i]);
+  for (isp=0; isp<sptree.nspecies; isp++){
+    printf("\n%-4s", (sptree.nodes[isp]).name);
+    for (i=0; i<traitdata.ntrait; i++)
+      printf(" %4d", traitdata.nij[i][isp]);
+    //printf("\n    ");
+    //for (i=0; i<traitdata.ntrait; i++)
+    //  printf(" %5.2f", traitdata.SSj[i][isp]);
+  }
+  printf("\n\n");
+
   /* print standardized values to out file */
   if(noisy) printf("Standardized trait data:\n");
   if(noisy) printTraitData(stdout);
@@ -2122,7 +2140,7 @@ int GetMem (char ipop[])
       if((com.conPin[0]=(double*)malloc(2*com.sconP))==NULL) 
          error2("oom conP");
       com.conPin[1]        = com.conPin[0]+com.sconP/sizeof(double);
-      printf("%d bytes for conP, %d bytes for gene trees.  \n\n", 2*com.sconP, stree);
+      printf("%lu bytes for conP, %d bytes for gene trees.\n\n", 2*com.sconP, stree);
 
       /* set gnodes[locus][].conP for tips and internal nodes */
       com.curconP = 0; conP = com.conPin[0];
@@ -4411,7 +4429,7 @@ double completeLoglikTraitData(int traitIndex,FILE * fout)
   logp += - log(Pi)*n/2 + log(kratio)/2 + nu0mult
           + log(traitmodel.priorSS)*traitmodel.nu0 /2;
   /* Pi defined in paml.h */
-  if (fout) printf("complete loglik=%8.4f\n",traitIndex+1,logp);
+  if (fout) printf("trait %d, complete loglik=%8.4f\n",traitIndex+1,logp);
   return(logp);
 }
 
