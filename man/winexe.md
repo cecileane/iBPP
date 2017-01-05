@@ -1,8 +1,8 @@
 running iBPP on Windows
 =======================
 
-This Windows executable
-[here](http://www.stat.wisc.edu/~ane/programs/ibpp.exe)
+This Windows executable for
+[v2.1.2](http://www.stat.wisc.edu/~ane/programs/ibpp.exe)
 and instructions below were provided by
 Carlos J. Pavón Vázquez (Departamento de Biología Evolutiva, UNAM, Mexico)
 and Emmanuel A. Pavón Vázquez.

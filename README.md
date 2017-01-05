@@ -1,15 +1,14 @@
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.12927.svg)](https://doi.org/10.5281/zenodo.12927)
-
 iBPP: integration of genes and traits for Bayesian Phylogenetics and Phylogeography
 -------
 
 - Claudia Solís-Lemus, L. Lacey Knowles and Cécile Ané (2014). 
 Bayesian species delimitation combining multiple genes and traits in a unified framework. 
 *Evolution* 69(2):492-507.
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.12927.svg)](https://doi.org/10.5281/zenodo.12927)
 
 - Ziheng Yang and Bruce Rannala (2010). 
 Bayesian species delimitation using multilocus sequence data. 
-*PNAS* 107:9264–9269.
+*PNAS* 107:9264–9269. [software](http://abacus.gene.ucl.ac.uk/software/).
 
 
 For a **Windows** executable and instructions, see [here](man/winexe.md).
@@ -25,3 +24,6 @@ To install and compile on Linux or Mac:
 - check that the executable runs on a very short example:
   * navigate to the example folder: `cd ../examples/`
   * then run ibpp: `ibpp 5s.analysis.ctl`
+
+See the [version history](versionHistory.txt)
+for recently added features.
