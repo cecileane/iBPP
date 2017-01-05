@@ -92,6 +92,8 @@ struct SPECIESTREE {
       int father, nson, sons[2];
       double age, theta;       /* age is tau */
    } nodes[2*NSPECIES-1];
+   /* in sptree.nodes: leaves from 0 to sptree.nspecies-1,
+      internal nodes >= sptree.nspecies: see ReadSpeciesTree */
 }  sptree;
 
 
@@ -207,6 +209,7 @@ int Coalescence1Pop(int ispecies);
 int CoalescentMigration(void);
 int ReadSeqData(char *seqfile, char *locusratef, char *heredityf, FILE*fout, char cleandata, char ipop[]);
 int ReadTraitData(char *traitfile, FILE*fout);
+void SetNijInternalNodes (int itrait, int inode);
 int StandardizeTraitData(FILE*fout);
 void printTraitData(FILE *fileout);
 double lnpGB_ThetaTau(int locus);
@@ -264,13 +267,23 @@ int main (int argc, char*argv[])
 #else
    char ctlf[128]="MCcoal.ctl";
 #endif
-   char VStr[128]="v2.1.2 (BPPv2.1 May 2011) integrated with traits, July 2014\n";
+   char VStr[128]="v2.1.3 (BPPv2.1 May 2011) integrated with traits, January 2017\n";
    FILE *fout;
    int i;
 
    noisy=0;
    printf("iBPP %s\n", VStr);
-   printf("Copyright (C) 2014 C. Solis-Lemus and C. Ane, based on Z. Yang's BP&P.\n\n    This program is free software: you can redistribute it and/or modify\n    it under the terms of the GNU General Public License as published by\n    the Free Software Foundation, either version 3 of the License, or\n    (at your option) any later version.\n\n    This program is distributed in the hope that it will be useful,\n    but WITHOUT ANY WARRANTY; without even the implied warranty of\n    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n    GNU General Public License for more details.\n\n    You should have received a copy of the GNU General Public License\n    along with this program.  If not, see <http://www.gnu.org/licenses/>.\n");
+   printf("Copyright (C) 2014-2017 C. Solis-Lemus and C. Ane, based on Z. Yang's BP&P.\n\n");
+   printf("    This program is free software: you can redistribute it and/or modify\n");
+   printf("    it under the terms of the GNU General Public License as published by\n");
+   printf("    the Free Software Foundation, either version 3 of the License, or\n");
+   printf("    (at your option) any later version.\n\n");
+   printf("    This program is distributed in the hope that it will be useful,\n");
+   printf("    but WITHOUT ANY WARRANTY; without even the implied warranty of\n");
+   printf("    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n");
+   printf("    GNU General Public License for more details.\n\n");
+   printf("    You should have received a copy of the GNU General Public License\n");
+   printf("    along with this program.  If not, see <http://www.gnu.org/licenses/>.\n");
    starttimer();
    if(argc>1) strcpy(ctlf, argv[1]);
    com.cleandata = 0;
@@ -1938,6 +1951,19 @@ int ReadTraitData(char *traitfile, FILE*fout)
    return(0);
 }
 
+/* post-order traversal to update traitdata.nij:
+   number of non-missing values for trait i, at or below node j.
+   Assumes: values already calculated at leaves, 0 at internal nodes */
+void SetNijInternalNodes(int itrait, int inode)
+{
+  for (int k=0; k<sptree.nodes[inode].nson; k++) { // nothing if node is leaf
+    int ison = sptree.nodes[inode].sons[k];
+    SetNijInternalNodes(itrait, ison);
+    traitdata.nij[itrait][inode] += traitdata.nij[itrait][ison];
+  }
+  //printf("\ntrait %d node %d (%s): n_ij=%d", itrait, inode,sptree.nodes[inode].name, traitdata.nij[itrait][inode]);
+}
+
 int StandardizeTraitData(FILE*fout)
 {
   double var, mydiff;
@@ -1952,14 +1978,15 @@ int StandardizeTraitData(FILE*fout)
 
   for (i=0; i<traitdata.ntrait; i++){
     /* initialize then calculate species-specific sums and sample sizes */
-    traitdata.nij[i]  =   (int*) malloc(sptree.nspecies * sizeof(int));
+    traitdata.nij[i]  =   (int*) calloc(2*sptree.nspecies-1, sizeof(int));
+    /* 2*nspecies-1 to get n_ij at all nodes j, internal nodes included */
     traitdata.ybarj[i]=(double*) malloc(sptree.nspecies * sizeof(double));
     traitdata.SSj[i]  =(double*) malloc(sptree.nspecies * sizeof(double));
 
     for (isp=0; isp<sptree.nspecies; isp++){
       traitdata.ybarj[i][isp] = 0.0;
       traitdata.SSj[i][isp]   = 0.0;
-      traitdata.nij[i][isp]   = 0;
+      // traitdata.nij[i][isp]   = 0; done with calloc above
     }
     for (j=0; j<traitdata.nind; j++){
       if (!traitdata.ismissing[i][j]){
@@ -1967,6 +1994,7 @@ int StandardizeTraitData(FILE*fout)
 	traitdata.ybarj[i][traitdata.indSpeciesMap[j]] += traitdata.y[i][j];
       }
     }
+    SetNijInternalNodes(i, sptree.root); /* start post-order traversal at root */
     /* calculate weighted average */
     traitdata.ybar[i]= 0.0;
     traitdata.ni[i] = 0;
@@ -3996,9 +4024,10 @@ int GetInitials (void)
 
 int collectx (FILE* fout, double x[])
 {
-/* This collects parameters into x[] for printing and summarizing.
+/* This collects relevant parameters into x[] for printing and summarizing.
    It checks the number of parameters.
-   If(fout), it prints the header line into fout.  Otherwise it does not print.
+   If fout, prints header line into fout, for relevant parameters only.
+   Otherwise does not print anything.
    if(com.np == -1) com.np is assigned a value here.
 */
    int printr1=(data.est_locusrate==1), i,j,k=0, is, ipop;
@@ -4097,6 +4126,9 @@ void copySptree (void)
 int MCMC (FILE* fout)
 {
    FILE *fmcmc=gfopen(com.mcmcf,"w"), *fmcmctmp;
+   /* fmcmctmp: temporary file created after the MCMC is over,
+      resticted to generations when the sampled species tree is equal to the MAP tree,
+      for summarizing continuous parameters on that tree */
    int nsteps = 8; /* was there a bug before? was 5+(data.nseqerr>0) instead of 6+(data.nseqerr>0) */
    char BtreeStr[NSPECIES], line[16000];
    int locus, j,k, ir, Btree=0, bit, lline=16000;
@@ -4135,12 +4167,12 @@ int MCMC (FILE* fout)
    printf("(Settings: cleandata=%d print=%d saveconP=%d moveinnode=%d)\n",
           com.cleandata, mcmc.print, mcmc.saveconP, mcmc.moveinnode);
 
-   printf("\nStarting MCMC... ");
-   com.np = GetInitials();
-
    printf("\nprior theta ~ G(%.3f, %.3f)\n", data.theta_prior[0], data.theta_prior[1]);
    if(sptree.nspecies>1)
       printf("prior tau   ~ G(%.3f, %.3f)\n", data.tau_prior[0], data.tau_prior[1]);
+
+   printf("\nStarting MCMC... ");
+   com.np = GetInitials();
 
    k = max2(4 + data.ngene, sptree.nspecies*3+3);
    k += data.nseqerr*16;
@@ -4168,6 +4200,8 @@ int MCMC (FILE* fout)
      completeLoglikTraitData_all(NULL, &lnLtrait); /* initializes lnLtrait */
    }
 
+   fprintf(fmcmc, "// header below: relevant parameters in the initial species tree before burnin.\n");
+   fprintf(fmcmc, "// for trees sampled later, the list of relevant theta and tau values may differ.\n");
    collectx(fmcmc, x);
 
    printf("\nInitial parameters, np = %d (gene trees generated from the prior):\n", com.np);
@@ -4368,14 +4402,16 @@ int MCMC (FILE* fout)
          sprintf(BtreeStr, " %s ", printSpItree(Btree));
 
          fmcmc = gfopen(com.mcmcf,"r");
-         for(j=0; j<mcmc.nsample+2; j++) {
+         for (j=0; j<3; j++) fgets(line, lline, fmcmc); // header and 2 comment lines
+         for (j=0; j<mcmc.nsample+1; j++) { // mcmc.nsample + 1 initial sample
             fgets(line, lline, fmcmc);
-            if(j && strstr(line, BtreeStr))
+            if (strstr(line, BtreeStr)) // to filter generations with the MAP tree
                fprintf(fmcmctmp, "%s", line);
          }
          fclose(fmcmc);
          fclose(fmcmctmp);
          DescriptiveStatisticsSimple(fout, mcmctmp, 50, 100, 3); // fixit: would be good to have diagnostic about top.
+         FPN(fout);
 	 printf("\n");
       }
    }
@@ -4504,9 +4540,12 @@ void  updatePIC(int inode, int traitIndex, struct INDEPENDENTCONTRAST * pic)
      that are collapsed are reprented by polytomies at age 0.
      We can run the PIC as usual.
      Post-order tree traversal. */
-  int k, nind;
-  double t0, sum1Am1, w0, contrast;
-  if (sptree.Itree == 0){ 
+  int nind = traitdata.nij[traitIndex][inode];
+  if (nind==0)
+    return; /* no data below inode: effectively pruning the tree */
+
+  double t0; /* length of root edge after rescaling tree to unit height * hsq */
+  if (sptree.Itree == 0) { // using hsq=0
     /* One single species: can't normalize by root age (=0). considering h2 (or lambda)=0 */
     t0 = 0.0;
   } else {
@@ -4517,11 +4556,7 @@ void  updatePIC(int inode, int traitIndex, struct INDEPENDENTCONTRAST * pic)
   }
 
   if (sptree.nodes[inode].nson==0){ // leaf
-    nind = traitdata.nij[traitIndex][inode];
-    if (nind==0)
-      error2("assuming at least one individual per putative species in updatePIC");
-
-    if (sptree.Itree == 0) { // using hsq=0
+      if (sptree.Itree == 0) { // using hsq=0
       pic->oneVmone = (double)nind;
       pic->logDetV  = 0.0;
       pic->contrastSS = traitdata.SSj[traitIndex][inode];
@@ -4533,27 +4568,39 @@ void  updatePIC(int inode, int traitIndex, struct INDEPENDENTCONTRAST * pic)
       pic->contrastSS = traitdata.SSj[traitIndex][inode] / (1 - traitmodel.hsq[traitIndex]);
     }
     pic->ancestralState = traitdata.ybarj[traitIndex][inode];
+    //printf("in update PIC, trait %d, leaf %d:\n",traitIndex+1, inode+1); printPIC(pic,stdout);
     return;
-  } 
-  else {
-    if (sptree.nodes[inode].nson!=2)
-      error2("Species tree with polytomies: need to be arbitrarily resolved");
-    struct INDEPENDENTCONTRAST pic0, pic1;
-    updatePIC( sptree.nodes[inode].sons[0], traitIndex, &pic0);
-    updatePIC( sptree.nodes[inode].sons[1], traitIndex, &pic1);
-
-    sum1Am1 = pic0.oneVmone + pic1.oneVmone;
-    w0 = pic0.oneVmone / sum1Am1; // weight of son0 for ancestral state
-
-    pic->oneVmone = 1/(t0 + 1/sum1Am1);
-    pic->logDetV = log(1 +  t0 * sum1Am1) + pic0.logDetV + pic1.logDetV;
-    pic->ancestralState = w0*pic0.ancestralState +(1-w0)*pic1.ancestralState;
-    contrast = pic0.ancestralState - pic1.ancestralState; // unnormalized contrast
-    pic->contrastSS = contrast*contrast/(1/pic0.oneVmone + 1/pic1.oneVmone)
-                      + pic0.contrastSS + pic1.contrastSS;
   }
-  /*printf("in update PIC node, trait %d, node %d:\n",traitIndex+1, inode+1);
-    printPIC(pic,stdout);*/
+  /* below: node is not leaf, and has nind > 0 */
+  if (sptree.nodes[inode].nson > 2)
+      error2("Species tree with polytomies: need to be arbitrarily resolved");
+  pic->ancestralState = 0.0;
+  pic->logDetV = 0.0;
+  pic->contrastSS = 0.0;
+  double sum1Am1 = 0.0, sumInv1Am1 = 0.0;
+  double contrast = 0.0; /* unnormalized contrast; requires 2 children with data */
+  int nchildren = 0; /* number of children with data */
+  for (int k=0; k<sptree.nodes[inode].nson; k++) {
+    int ison = sptree.nodes[inode].sons[k];
+    if (traitdata.nij[traitIndex][ison]==0)
+      continue; /* to prune the tree of node without any data */
+    nchildren++;
+    struct INDEPENDENTCONTRAST pic_son;
+    updatePIC(ison, traitIndex, &pic_son);
+
+    sum1Am1    +=   pic_son.oneVmone;
+    sumInv1Am1 += 1/pic_son.oneVmone;
+    pic->ancestralState += pic_son.oneVmone * pic_son.ancestralState; // normalized later
+    pic->logDetV += pic_son.logDetV;
+    pic->contrastSS += pic_son.contrastSS;
+    contrast += ( k==0 ? pic_son.ancestralState : - pic_son.ancestralState);
+  }
+  pic->ancestralState /= sum1Am1;
+  pic->oneVmone = 1/(t0 + 1/sum1Am1);
+  pic->logDetV += log(1 +  t0 * sum1Am1); /* contribution of root edge */
+  if (nchildren == 2)
+    pic->contrastSS += contrast*contrast / sumInv1Am1;
+  //printf("in update PIC, trait %d, node %d:\n",traitIndex+1, inode+1);printPIC(pic,stdout);
 }
 
 void setTraitHsq(int traitIndex, double hsq)

@@ -16,7 +16,7 @@ For a **Windows** executable and instructions, see [here](man/winexe.md).
 
 To install and compile on Linux or Mac:
 
-- download and unzip the package, or clone it using git:  
+- download and unzip the package, or clone it using git:
   `git clone https://github.com/cecileane/iBPP.git`
 - navigate to the source directory: `cd iBPP/src/`
 - compile with `gcc -o ibpp -O3 bpp.c tools.c -lm`
