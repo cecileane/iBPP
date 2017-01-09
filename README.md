@@ -25,7 +25,7 @@ To install and compile on Linux or Mac (with Xcode installed):
 - navigate to the source directory: `cd iBPP/src/`
 - compile with
   `gcc -o ibpp -O3 bpp.c tools.c -lm`.
-  on OS X (Mac), do
+  On Mac OS X, do
   `clang -o ibpp -O3 bpp.c tools.c -lm`
   to request the Apple compiler `clang` explicitly.
   With `gcc` 4.4.7 to 5.4.0, the option `-std=c89` is necessary:
