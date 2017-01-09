@@ -23,8 +23,12 @@ To install and compile on Linux or Mac (with Xcode installed):
 - download and unzip the package, or clone it using git:
   `git clone https://github.com/cecileane/iBPP.git`
 - navigate to the source directory: `cd iBPP/src/`
-- compile with `gcc -o ibpp -O3 bpp.c tools.c -lm`, which works on OSX with
- `clang`. With `gcc` 4.4.7 to 5.4.0, the option `-std=c89` is necessary:
+- compile with
+  `gcc -o ibpp -O3 bpp.c tools.c -lm`.
+  on OS X (Mac), do
+  `clang -o ibpp -O3 bpp.c tools.c -lm`
+  to request the Apple compiler `clang` explicitly.
+  With `gcc` 4.4.7 to 5.4.0, the option `-std=c89` is necessary:
 
   `gcc -o ibpp -O3 -std=c89 bpp.c tools.c -lm`
 
