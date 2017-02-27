@@ -1,9 +1,11 @@
 running iBPP on Windows
 =======================
 
-This Windows executable for
-[v2.1.2](http://www.stat.wisc.edu/~ane/programs/ibpp.exe)
-and instructions below were provided by
+downloads Windows executables:
+- for [v2.1.3](https://github.com/pavonvazquez/iBPP_exeForWindows/blob/master/ibpp.exe)
+- for [v2.1.2](http://www.stat.wisc.edu/~ane/programs/ibpp.exe)
+
+These executables and instructions below were provided by
 Carlos J. Pavón Vázquez (Departamento de Biología Evolutiva, UNAM, Mexico)
 and Emmanuel A. Pavón Vázquez.
 Many thanks!
