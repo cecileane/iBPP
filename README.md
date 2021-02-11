@@ -18,6 +18,12 @@ For a **Windows** executable and instructions, see [here](man/winexe.md).
 
 ## Installation
 
+*Warning*: the code compiles but does *not* work with the more recent gcc compilers.
+- works well with, for example: `gcc` v5 (Linux),
+  or `clang` v7.0.2, `clang` v12.0.0 (OSX)
+- compiles (an executable is produced) but doesn't work with
+  `gcc` v6.1.0 or `gcc` v7.5.0 (Unbuntu 18.04)
+
 To install and compile on Linux or Mac (with Xcode installed):
 
 - download and unzip the package, or clone it using git:
@@ -31,8 +37,6 @@ To install and compile on Linux or Mac (with Xcode installed):
   With `gcc` 4.4.7 to 5.4.0, the option `-std=c89` is necessary:
 
   `gcc -o ibpp -O3 -std=c89 bpp.c tools.c -lm`
-
-  With `gcc` 6.1.0, an executable is produced but does not work.
 
 - move the executable to a directory in your PATH, typically `~/bin/`,
   to run iBPP from anywhere: `mv ibpp ~/bin/`
