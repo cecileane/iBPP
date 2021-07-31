@@ -1,7 +1,7 @@
 * example file to analyze data: genes and traits   *
 * run at the command line:  ibpp 5s.trait.bpp.ctl  *
 
-          seed = 1234     * change this to positive integer to fix the seed
+          seed = 1234     * change the seed to some other number for each analysis, or to -1 for a random seed
 
        seqfile = 5s.sequences.txt
       Imapfile = 5s.Imap.txt
