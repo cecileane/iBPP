@@ -1,7 +1,7 @@
 * example file to analyze data: genes and traits   *
 * run at the command line:  ibpp 5s.trait.bpp.ctl  *
 
-          seed = -1     * change this to positive integer to fix the seed
+          seed = 1234     * change this to positive integer to fix the seed
 
        seqfile = 5s.sequences.txt
       Imapfile = 5s.Imap.txt
@@ -25,7 +25,7 @@
 * (((A #0.002, B) : 0.005 #.002, C #0.002) : 0.01 #.002, (D, E) :.015 #.002) : 0.02 #0.002;
 
 *      usedata = 0    * 0: no data (prior); 1:seq & trait like
-    useseqdata = 0    * 0: no seq data;     1:seq like
+    useseqdata = 1    * 0: no seq data;     1:seq like
   usetraitdata = 1    * 0: no trait data;   1:trait like
          nloci = 5    * number of data sets in seqfile
        ntraits = 2    * number of trait variables
@@ -50,7 +50,7 @@
          print = 1
         burnin = 5 # 5000
       sampfreq = 2
-       nsample = 5 # 50000
+       nsample = 50 # 50000
 
 
 *** Note: Make your window wider (144 columns) before running the program.
